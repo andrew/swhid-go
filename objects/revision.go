@@ -1,8 +1,7 @@
 package objects
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -18,21 +17,32 @@ type RevisionMetadata struct {
 	CommitterTimestamp int64    // Unix timestamp
 	CommitterTimezone  string   // "+0000" format
 	Message            string
+	MessagePresent     bool
 	ExtraHeaders       [][2]string // Additional headers like gpgsig
 }
 
 // ComputeRevisionHash computes the Git commit hash for a revision.
-func ComputeRevisionHash(meta RevisionMetadata) string {
-	serialized := serializeRevision(meta)
-	header := fmt.Sprintf("commit %d\x00", len(serialized))
-
-	h := sha1.New()
-	h.Write([]byte(header))
-	h.Write(serialized)
-	return hex.EncodeToString(h.Sum(nil))
+func ComputeRevisionHash(meta RevisionMetadata) (string, error) {
+	serialized, err := serializeRevision(meta)
+	if err != nil {
+		return "", err
+	}
+	return computeObjectHash("commit", int64(len(serialized)), bytes.NewReader(serialized))
 }
 
-func serializeRevision(meta RevisionMetadata) []byte {
+func serializeRevision(meta RevisionMetadata) ([]byte, error) {
+	if err := validateObjectID("directory", meta.Directory); err != nil {
+		return nil, err
+	}
+	for _, parent := range meta.Parents {
+		if err := validateObjectID("parent", parent); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateExtraHeaders(meta.ExtraHeaders); err != nil {
+		return nil, err
+	}
+
 	var lines []string
 
 	// Tree
@@ -44,20 +54,12 @@ func serializeRevision(meta RevisionMetadata) []byte {
 	}
 
 	// Author
-	authorTz := meta.AuthorTimezone
-	if authorTz == "" {
-		authorTz = "+0000"
-	}
 	authorEscaped := escapeNewlines(meta.Author)
-	lines = append(lines, fmt.Sprintf("author %s %d %s", authorEscaped, meta.AuthorTimestamp, authorTz))
+	lines = append(lines, fmt.Sprintf("author %s %d %s", authorEscaped, meta.AuthorTimestamp, escapeNewlines(meta.AuthorTimezone)))
 
 	// Committer
-	committerTz := meta.CommitterTimezone
-	if committerTz == "" {
-		committerTz = "+0000"
-	}
 	committerEscaped := escapeNewlines(meta.Committer)
-	lines = append(lines, fmt.Sprintf("committer %s %d %s", committerEscaped, meta.CommitterTimestamp, committerTz))
+	lines = append(lines, fmt.Sprintf("committer %s %d %s", committerEscaped, meta.CommitterTimestamp, escapeNewlines(meta.CommitterTimezone)))
 
 	// Extra headers
 	for _, header := range meta.ExtraHeaders {
@@ -66,12 +68,11 @@ func serializeRevision(meta RevisionMetadata) []byte {
 
 	result := strings.Join(lines, "\n") + "\n"
 
-	// Message (after blank line)
-	if meta.Message != "" {
+	if meta.MessagePresent || meta.Message != "" {
 		result += "\n" + meta.Message
 	}
 
-	return []byte(result)
+	return []byte(result), nil
 }
 
 func escapeNewlines(s string) string {

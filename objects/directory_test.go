@@ -13,7 +13,7 @@ func TestComputeDirectoryHash(t *testing.T) {
 		{
 			name:     "empty directory",
 			entries:  []DirectoryEntry{},
-			wantHash: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+			wantHash: emptyTreeHash,
 		},
 		{
 			name: "single file with hello content",
@@ -31,7 +31,10 @@ func TestComputeDirectoryHash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hash := ComputeDirectoryHash(tt.entries)
+			hash, err := ComputeDirectoryHash(tt.entries)
+			if err != nil {
+				t.Fatalf("ComputeDirectoryHash() error = %v", err)
+			}
 			if hash != tt.wantHash {
 				t.Errorf("ComputeDirectoryHash() = %v, want %v", hash, tt.wantHash)
 			}
@@ -94,24 +97,52 @@ func TestDirectoryEntryDefaultPerms(t *testing.T) {
 func TestDirectoryEntrySorting(t *testing.T) {
 	// Entries should be sorted by name, with directories having trailing /
 	entries := []DirectoryEntry{
-		{Name: "z", Type: EntryTypeFile, Target: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"},
-		{Name: "a", Type: EntryTypeFile, Target: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"},
-		{Name: "m", Type: EntryTypeDirectory, Target: "4b825dc642cb6eb9a060e54bf8d69288fbee4904"},
+		{Name: "z", Type: EntryTypeFile, Target: emptyBlobHash},
+		{Name: "a", Type: EntryTypeFile, Target: emptyBlobHash},
+		{Name: "m", Type: EntryTypeDirectory, Target: emptyTreeHash},
 	}
 
 	// Computing should produce a deterministic hash regardless of input order
-	hash1 := ComputeDirectoryHash(entries)
+	hash1, err := ComputeDirectoryHash(entries)
+	if err != nil {
+		t.Fatalf("ComputeDirectoryHash() error = %v", err)
+	}
 
 	// Reverse order
 	entries2 := []DirectoryEntry{
-		{Name: "m", Type: EntryTypeDirectory, Target: "4b825dc642cb6eb9a060e54bf8d69288fbee4904"},
-		{Name: "a", Type: EntryTypeFile, Target: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"},
-		{Name: "z", Type: EntryTypeFile, Target: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"},
+		{Name: "m", Type: EntryTypeDirectory, Target: emptyTreeHash},
+		{Name: "a", Type: EntryTypeFile, Target: emptyBlobHash},
+		{Name: "z", Type: EntryTypeFile, Target: emptyBlobHash},
 	}
 
-	hash2 := ComputeDirectoryHash(entries2)
+	hash2, err := ComputeDirectoryHash(entries2)
+	if err != nil {
+		t.Fatalf("ComputeDirectoryHash() error = %v", err)
+	}
 
 	if hash1 != hash2 {
 		t.Errorf("Hash should be deterministic regardless of input order: %v != %v", hash1, hash2)
+	}
+}
+
+func TestComputeDirectoryHashRejectsInvalidEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []DirectoryEntry
+	}{
+		{name: "duplicate name", entries: []DirectoryEntry{{Name: testEntryName, Target: emptyBlobHash}, {Name: testEntryName, Target: emptyBlobHash}}},
+		{name: "slash in name", entries: []DirectoryEntry{{Name: "dir/file", Target: emptyBlobHash}}},
+		{name: "invalid target", entries: []DirectoryEntry{{Name: testEntryName, Target: invalidObjectHash}}},
+		{name: "invalid permissions", entries: []DirectoryEntry{{Name: testEntryName, Target: emptyBlobHash, Perms: "100777"}}},
+		{name: "permissions mismatch", entries: []DirectoryEntry{{Name: testEntryName, Type: EntryTypeDirectory, Target: emptyTreeHash, Perms: "100644"}}},
+		{name: "invalid type", entries: []DirectoryEntry{{Name: testEntryName, Type: EntryType(99), Target: emptyBlobHash}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ComputeDirectoryHash(tt.entries); err == nil {
+				t.Fatal("ComputeDirectoryHash() expected error")
+			}
+		})
 	}
 }

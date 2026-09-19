@@ -1,8 +1,7 @@
 package objects
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -25,20 +24,18 @@ type ReleaseTarget struct {
 }
 
 // GitType returns the Git object type name.
-func (t ReleaseTarget) GitType() string {
+func (t ReleaseTarget) GitType() (string, error) {
 	switch t.Type {
 	case TargetTypeContent:
-		return "blob"
+		return "blob", nil
 	case TargetTypeDirectory:
-		return "tree"
+		return "tree", nil
 	case TargetTypeRevision:
-		return "commit"
+		return "commit", nil
 	case TargetTypeRelease:
-		return "tag"
-	case TargetTypeSnapshot:
-		return "snapshot"
+		return "tag", nil
 	default:
-		return "commit"
+		return "", fmt.Errorf("invalid release target type %q", t.Type)
 	}
 }
 
@@ -50,28 +47,34 @@ type ReleaseMetadata struct {
 	AuthorTimestamp int64  // Unix timestamp, required if Author is set
 	AuthorTimezone  string // "+0000" format
 	Message         string
-	ExtraHeaders    [][2]string // Additional headers like gpgsig
+	MessagePresent  bool
 }
 
 // ComputeReleaseHash computes the Git tag hash for a release.
-func ComputeReleaseHash(meta ReleaseMetadata) string {
-	serialized := serializeRelease(meta)
-	header := fmt.Sprintf("tag %d\x00", len(serialized))
-
-	h := sha1.New()
-	h.Write([]byte(header))
-	h.Write(serialized)
-	return hex.EncodeToString(h.Sum(nil))
+func ComputeReleaseHash(meta ReleaseMetadata) (string, error) {
+	serialized, err := serializeRelease(meta)
+	if err != nil {
+		return "", err
+	}
+	return computeObjectHash("tag", int64(len(serialized)), bytes.NewReader(serialized))
 }
 
-func serializeRelease(meta ReleaseMetadata) []byte {
+func serializeRelease(meta ReleaseMetadata) ([]byte, error) {
+	if err := validateObjectID("target", meta.Target.Hash); err != nil {
+		return nil, err
+	}
+	gitType, err := meta.Target.GitType()
+	if err != nil {
+		return nil, err
+	}
+
 	var lines []string
 
 	// Object (target hash)
 	lines = append(lines, "object "+meta.Target.Hash)
 
 	// Type
-	lines = append(lines, "type "+meta.Target.GitType())
+	lines = append(lines, "type "+gitType)
 
 	// Tag name
 	nameEscaped := escapeNewlines(meta.Name)
@@ -79,25 +82,15 @@ func serializeRelease(meta ReleaseMetadata) []byte {
 
 	// Tagger (optional)
 	if meta.Author != "" {
-		tz := meta.AuthorTimezone
-		if tz == "" {
-			tz = "+0000"
-		}
 		authorEscaped := escapeNewlines(meta.Author)
-		lines = append(lines, fmt.Sprintf("tagger %s %d %s", authorEscaped, meta.AuthorTimestamp, tz))
-	}
-
-	// Extra headers
-	for _, header := range meta.ExtraHeaders {
-		lines = append(lines, formatHeaderLine(header[0], header[1]))
+		lines = append(lines, fmt.Sprintf("tagger %s %d %s", authorEscaped, meta.AuthorTimestamp, escapeNewlines(meta.AuthorTimezone)))
 	}
 
 	result := strings.Join(lines, "\n") + "\n"
 
-	// Message (after blank line)
-	if meta.Message != "" {
+	if meta.MessagePresent || meta.Message != "" {
 		result += "\n" + meta.Message
 	}
 
-	return []byte(result)
+	return []byte(result), nil
 }

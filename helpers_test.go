@@ -7,7 +7,10 @@ import (
 )
 
 func TestFromContent(t *testing.T) {
-	id := FromContent([]byte("hello\n"))
+	id, err := FromContent([]byte("hello\n"))
+	if err != nil {
+		t.Fatalf("FromContent() error = %v", err)
+	}
 
 	if id.ObjectType != ObjectTypeContent {
 		t.Errorf("FromContent() type = %v, want %v", id.ObjectType, ObjectTypeContent)
@@ -29,7 +32,10 @@ func TestFromDirectory(t *testing.T) {
 		},
 	}
 
-	id := FromDirectory(entries)
+	id, err := FromDirectory(entries)
+	if err != nil {
+		t.Fatalf("FromDirectory() error = %v", err)
+	}
 
 	if id.ObjectType != ObjectTypeDirectory {
 		t.Errorf("FromDirectory() type = %v, want %v", id.ObjectType, ObjectTypeDirectory)
@@ -44,7 +50,7 @@ func TestFromDirectory(t *testing.T) {
 
 func TestFromRevisionMetadata(t *testing.T) {
 	meta := objects.RevisionMetadata{
-		Directory:          "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+		Directory:          emptyTreeHash,
 		Author:             "Test <test@example.com>",
 		AuthorTimestamp:    1000000000,
 		AuthorTimezone:     "+0000",
@@ -54,7 +60,10 @@ func TestFromRevisionMetadata(t *testing.T) {
 		Message:            "Test\n",
 	}
 
-	id := FromRevisionMetadata(meta)
+	id, err := FromRevisionMetadata(meta)
+	if err != nil {
+		t.Fatalf("FromRevisionMetadata() error = %v", err)
+	}
 
 	if id.ObjectType != ObjectTypeRevision {
 		t.Errorf("FromRevisionMetadata() type = %v, want %v", id.ObjectType, ObjectTypeRevision)
@@ -69,13 +78,16 @@ func TestFromReleaseMetadata(t *testing.T) {
 	meta := objects.ReleaseMetadata{
 		Name: "v1.0.0",
 		Target: objects.ReleaseTarget{
-			Hash: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+			Hash: emptyTreeHash,
 			Type: objects.TargetTypeRevision,
 		},
 		Message: "Release\n",
 	}
 
-	id := FromReleaseMetadata(meta)
+	id, err := FromReleaseMetadata(meta)
+	if err != nil {
+		t.Fatalf("FromReleaseMetadata() error = %v", err)
+	}
 
 	if id.ObjectType != ObjectTypeRelease {
 		t.Errorf("FromReleaseMetadata() type = %v, want %v", id.ObjectType, ObjectTypeRelease)
@@ -89,13 +101,16 @@ func TestFromReleaseMetadata(t *testing.T) {
 func TestFromSnapshotBranches(t *testing.T) {
 	branches := []objects.Branch{
 		{
-			Name:       "refs/heads/main",
+			Name:       mainBranchRef,
 			TargetType: objects.BranchTargetRevision,
-			Target:     "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+			Target:     emptyTreeHash,
 		},
 	}
 
-	id := FromSnapshotBranches(branches)
+	id, err := FromSnapshotBranches(branches)
+	if err != nil {
+		t.Fatalf("FromSnapshotBranches() error = %v", err)
+	}
 
 	if id.ObjectType != ObjectTypeSnapshot {
 		t.Errorf("FromSnapshotBranches() type = %v, want %v", id.ObjectType, ObjectTypeSnapshot)

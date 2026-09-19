@@ -1,116 +1,164 @@
 # swhid-go
 
-A Go library and CLI for computing Software Heritage Identifiers (SWHIDs).
+A Go library and CLI for computing and parsing SoftWare Hash IDentifiers (SWHIDs). It targets the [SWHID v1.2 specification](https://www.swhid.org/specification/v1.2/), published as ISO/IEC 18670:2025.
 
-SWHIDs are intrinsic identifiers for digital objects based on cryptographic hashes. They're used by Software Heritage to uniquely identify source code artifacts.
+The package handles content, directories, revisions, releases, snapshots, and qualified identifiers. SHA-1 calculations use collision detection and return an error if a collision is found.
 
-## Installation
+## Install
+
+The module requires Go 1.26 or later.
 
 ```bash
 go get github.com/andrew/swhid-go
-```
-
-For the CLI:
-
-```bash
 go install github.com/andrew/swhid-go/cmd/swhid@latest
 ```
 
-## Library Usage
+## Go API
+
+Go applications should import the package directly. Every hashing function returns an error because malformed metadata, input failures, and detected SHA-1 collisions cannot produce a valid SWHID.
 
 ```go
 package main
 
 import (
-    "fmt"
-    "github.com/andrew/swhid-go"
-    "github.com/andrew/swhid-go/objects"
+	"encoding/json"
+	"fmt"
+	"log"
+
+	"github.com/andrew/swhid-go"
+	"github.com/andrew/swhid-go/objects"
 )
 
 func main() {
-    // Compute SWHID for content
-    id := swhid.FromContent([]byte("hello\n"))
-    fmt.Println(id) // swh:1:cnt:ce013625030ba8dba906f756967f9e9ca394464a
+	contentID, err := swhid.FromContent([]byte("hello\n"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(contentID)
 
-    // Parse an existing SWHID
-    parsed, _ := swhid.Parse("swh:1:cnt:ce013625030ba8dba906f756967f9e9ca394464a")
-    fmt.Println(parsed.ObjectType) // cnt
-    fmt.Println(parsed.ObjectHash) // ce013625030ba8dba906f756967f9e9ca394464a
+	parsed, err := swhid.Parse("swh:1:cnt:ce013625030ba8dba906f756967f9e9ca394464a")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(parsed.ObjectType)
 
-    // Compute SWHID for a directory
-    entries := []objects.DirectoryEntry{
-        {Name: "hello.txt", Type: objects.EntryTypeFile, Target: "ce013625030ba8dba906f756967f9e9ca394464a"},
-    }
-    dirID := swhid.FromDirectory(entries)
-    fmt.Println(dirID) // swh:1:dir:...
+	directoryID, err := swhid.FromDirectory([]objects.DirectoryEntry{
+		{Name: "hello.txt", Type: objects.EntryTypeFile, Target: contentID.ObjectHash},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(directoryID)
 
-    // Hash a directory from the filesystem
-    fsID, _ := swhid.FromDirectoryPath("/path/to/dir")
-    fmt.Println(fsID)
-
-    // Hash a git commit
-    revID, _ := swhid.FromRevision("/path/to/repo", "HEAD")
-    fmt.Println(revID)
+	data, err := json.Marshal(contentID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(string(data))
 }
 ```
 
-## CLI Usage
+`FromContentReader` hashes a stream with a known byte length. It is the better choice for large files. `FromDirectoryPath` walks a filesystem tree. `FromRevision`, `FromRelease`, and `FromSnapshot` read Git repositories through go-git.
+
+Qualifiers are decoded in memory and emitted in canonical order. Construction validates the rules for `origin`, `visit`, `anchor`, `path`, `lines`, and `bytes`.
+
+```go
+qualified, err := contentID.WithQualifiers(map[string]string{
+	"origin": "https://example.com/source.git",
+	"path":   "/src/main.go",
+	"lines":  "10-20",
+})
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println(qualified)
+```
+
+`Identifier` implements `encoding.TextMarshaler` and `encoding.TextUnmarshaler`. JSON encoders therefore store an identifier as its canonical string when it appears inside another Go value.
+
+The JSON value in the example is `"swh:1:cnt:ce013625030ba8dba906f756967f9e9ca394464a"`.
+
+`objects.RevisionMetadata` and `objects.ReleaseMetadata` use `MessagePresent` to distinguish a missing message from a present empty message. Set it when the serialized object has a message separator but no message bytes.
+
+## CLI
+
+```text
+swhid parse [options] <swhid>
+swhid content [options]
+swhid directory [options] <path>
+swhid revision [options] <repo> [ref]
+swhid release [options] <repo> <tag>
+swhid snapshot [options] <repo>
+```
+
+Content is read from standard input. Release identifiers require annotated Git tags. Snapshot identifiers include local branches, tags, and one symbolic `HEAD`; remote-tracking references are excluded.
 
 ```bash
-# Parse and validate a SWHID
-swhid parse swh:1:cnt:ce013625030ba8dba906f756967f9e9ca394464a
-
-# Generate SWHID from file content (stdin)
-echo "hello" | swhid content
-
-# Generate SWHID from directory
-swhid directory /path/to/dir
-
-# Generate SWHID from git commit
-swhid revision /path/to/repo
-swhid revision /path/to/repo main
-swhid revision /path/to/repo abc123
-
-# Generate SWHID from annotated git tag
-swhid release /path/to/repo v1.0.0
-
-# Generate SWHID for repository snapshot
-swhid snapshot /path/to/repo
-
-# JSON output (flag before positional args)
-swhid parse -f json swh:1:cnt:ce013625030ba8dba906f756967f9e9ca394464a
-
-# Add qualifiers
-echo "hello" | swhid content -q origin=https://github.com/example/repo
+printf 'hello\n' | swhid content -f raw
+swhid directory /path/to/tree --format json
+swhid revision /path/to/repo HEAD --format raw
+swhid release /path/to/repo v1.0.0 --format jsonl
+swhid snapshot /path/to/repo --qualifier origin=https://example.com/repo.git
 ```
 
-## Object Types
+Options may appear before or after positional arguments. The output formats are:
 
-| Type | Code | Description |
-|------|------|-------------|
-| Content | `cnt` | File content (blob) |
-| Directory | `dir` | Directory tree |
-| Revision | `rev` | Git commit |
-| Release | `rel` | Annotated tag |
-| Snapshot | `snp` | Repository state |
+- `text`: labelled output for a terminal. This is the default.
+- `raw`: the canonical SWHID followed by a newline.
+- `json`: an indented object with `swhid`, `core`, `object_type`, `object_hash`, and `qualifiers` fields.
+- `jsonl`: the same object on one line. Each invocation emits one record.
 
-## SWHID Format
+Exit status `0` means success. Status `1` reports invalid input, hashing failures, or filesystem and Git errors. Status `2` reports command-line usage errors. Machine output goes to standard output and diagnostics go to standard error.
 
+## Ruby subprocess use
+
+Ruby applications can call the CLI with `Open3` and parse the JSON result. Pass command arguments as an array so paths and qualifier values do not pass through a shell.
+
+```ruby
+require "json"
+require "open3"
+
+stdout, stderr, status = Open3.capture3(
+  "swhid", "parse", value, "--format", "json"
+)
+raise stderr unless status.success?
+
+result = JSON.parse(stdout)
+result.fetch("swhid")
 ```
-swh:1:<type>:<hash>[;<qualifier>=<value>...]
+
+Binary content can be sent through standard input without interpolation:
+
+```ruby
+stdout, stderr, status = Open3.capture3(
+  "swhid", "content", "--format", "json",
+  stdin_data: bytes,
+  binmode: true
+)
+raise stderr unless status.success?
+
+result = JSON.parse(stdout)
 ```
 
-- `swh` - scheme
-- `1` - version
-- `<type>` - object type (cnt, dir, rev, rel, snp)
-- `<hash>` - 40-character SHA1 hex digest
-- `<qualifier>` - optional qualifiers (origin, visit, anchor, path, lines, bytes)
+Use `jsonl` when a caller collects records from several invocations into one stream. A long-running batch protocol would need a separate request schema for binary content and filesystem paths; the current CLI processes one object per invocation.
 
-## Links
+## Filesystem behavior
 
-- [SWHID Specification](https://www.swhid.org/)
+`FromDirectoryPath` and `swhid directory` apply these rules:
+
+- Files are streamed into the collision-detecting hasher.
+- Symlinks hash their link target and are not followed.
+- Git index modes determine executable files when an index is available.
+- Gitlinks use mode `160000` and the revision stored in the index.
+- The repository root's `.git` entry is excluded. An ordinary `.git` entry elsewhere is included.
+- Sockets, devices, FIFOs, and other special files return an error.
+
+## References
+
+- [SWHID specification v1.2](https://www.swhid.org/specification/v1.2/)
 - [Software Heritage](https://www.softwareheritage.org/)
-- [Ruby implementation](https://github.com/swhid/swhid)
+- [Rust reference implementation](https://github.com/swhid/swhid-rs)
+- [Software Heritage Python model](https://gitlab.softwareheritage.org/swh/devel/swh-model)
 
 ## License
 

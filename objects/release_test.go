@@ -8,16 +8,19 @@ func TestComputeReleaseHash(t *testing.T) {
 	meta := ReleaseMetadata{
 		Name: "v1.0.0",
 		Target: ReleaseTarget{
-			Hash: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+			Hash: emptyTreeHash,
 			Type: TargetTypeRevision,
 		},
-		Author:          "Test Author <test@example.com>",
+		Author:          testAuthor,
 		AuthorTimestamp: 1234567890,
 		AuthorTimezone:  "+0000",
 		Message:         "Release v1.0.0\n",
 	}
 
-	hash := ComputeReleaseHash(meta)
+	hash, err := ComputeReleaseHash(meta)
+	if err != nil {
+		t.Fatalf("ComputeReleaseHash() error = %v", err)
+	}
 
 	// Just verify it produces a 40-char hex hash
 	if len(hash) != 40 {
@@ -25,7 +28,10 @@ func TestComputeReleaseHash(t *testing.T) {
 	}
 
 	// Verify determinism
-	hash2 := ComputeReleaseHash(meta)
+	hash2, err := ComputeReleaseHash(meta)
+	if err != nil {
+		t.Fatalf("ComputeReleaseHash() error = %v", err)
+	}
 	if hash != hash2 {
 		t.Errorf("ComputeReleaseHash() not deterministic: %v != %v", hash, hash2)
 	}
@@ -35,17 +41,41 @@ func TestReleaseWithoutTagger(t *testing.T) {
 	meta := ReleaseMetadata{
 		Name: "v0.1.0",
 		Target: ReleaseTarget{
-			Hash: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+			Hash: emptyTreeHash,
 			Type: TargetTypeRevision,
 		},
 		Message: "Early release\n",
 	}
 
-	hash := ComputeReleaseHash(meta)
+	hash, err := ComputeReleaseHash(meta)
+	if err != nil {
+		t.Fatalf("ComputeReleaseHash() error = %v", err)
+	}
 
 	// Just verify it produces a 40-char hex hash
 	if len(hash) != 40 {
 		t.Errorf("ComputeReleaseHash() hash length = %d, want 40", len(hash))
+	}
+}
+
+func TestReleasePresentEmptyMessage(t *testing.T) {
+	meta := ReleaseMetadata{
+		Name:           "v0.1.0",
+		Target:         ReleaseTarget{Hash: emptyTreeHash, Type: TargetTypeRevision},
+		MessagePresent: true,
+	}
+
+	presentHash, err := ComputeReleaseHash(meta)
+	if err != nil {
+		t.Fatalf("ComputeReleaseHash() error = %v", err)
+	}
+	meta.MessagePresent = false
+	absentHash, err := ComputeReleaseHash(meta)
+	if err != nil {
+		t.Fatalf("ComputeReleaseHash() without message error = %v", err)
+	}
+	if presentHash == absentHash {
+		t.Error("present empty message hashes the same as an absent message")
 	}
 }
 
@@ -58,13 +88,26 @@ func TestReleaseTargetGitType(t *testing.T) {
 		{TargetTypeDirectory, "tree"},
 		{TargetTypeRevision, "commit"},
 		{TargetTypeRelease, "tag"},
-		{TargetTypeSnapshot, "snapshot"},
 	}
 
 	for _, tt := range tests {
 		target := ReleaseTarget{Type: tt.targetType}
-		if got := target.GitType(); got != tt.wantGit {
+		got, err := target.GitType()
+		if err != nil {
+			t.Fatalf("GitType() error = %v", err)
+		}
+		if got != tt.wantGit {
 			t.Errorf("GitType() for %v = %v, want %v", tt.targetType, got, tt.wantGit)
 		}
+	}
+}
+
+func TestReleaseRejectsInvalidTarget(t *testing.T) {
+	meta := ReleaseMetadata{
+		Name:   "v1.0.0",
+		Target: ReleaseTarget{Hash: invalidObjectHash, Type: TargetTypeSnapshot},
+	}
+	if _, err := ComputeReleaseHash(meta); err == nil {
+		t.Fatal("ComputeReleaseHash() expected error")
 	}
 }
