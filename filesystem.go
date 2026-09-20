@@ -21,24 +21,24 @@ type indexedEntry struct {
 // FromDirectoryPath computes the SWHID for a directory on the filesystem.
 // It recursively hashes all files and subdirectories.
 // If the directory is within a Git repository, it uses the Git index for file permissions.
-func FromDirectoryPath(path string) (*Identifier, error) {
-	return FromDirectoryPathWithOptions(path, nil, nil)
+func FromDirectoryPath(dirPath string) (*Identifier, error) {
+	return FromDirectoryPathWithOptions(dirPath, nil, nil)
 }
 
 // FromDirectoryPathWithOptions computes the SWHID with custom options.
 // gitRepo can be provided to use Git index for permissions.
 // permissions can be provided as a map of path -> mode for explicit permissions.
-func FromDirectoryPathWithOptions(path string, gitRepo *git.Repository, permissions map[string]os.FileMode) (*Identifier, error) {
-	info, err := os.Stat(path)
+func FromDirectoryPathWithOptions(dirPath string, gitRepo *git.Repository, permissions map[string]os.FileMode) (*Identifier, error) {
+	info, err := os.Stat(dirPath)
 	if err != nil {
 		return nil, err
 	}
 	if !info.IsDir() {
-		return nil, &os.PathError{Op: "swhid", Path: path, Err: os.ErrInvalid}
+		return nil, &os.PathError{Op: "swhid", Path: dirPath, Err: os.ErrInvalid}
 	}
 
 	if gitRepo == nil {
-		gitRepo = discoverGitRepo(path)
+		gitRepo = discoverGitRepo(dirPath)
 	}
 
 	indexEntries, err := loadIndexEntries(gitRepo)
@@ -50,12 +50,12 @@ func FromDirectoryPathWithOptions(path string, gitRepo *git.Repository, permissi
 		return nil, fmt.Errorf("find Git worktree: %w", err)
 	}
 
-	repoRelativePath, withinRepo := relativePathInRepo(path, repoRoot)
-	return fromDirectoryPath(path, repoRelativePath, withinRepo, permissions, indexEntries)
+	repoRelativePath, withinRepo := relativePathInRepo(dirPath, repoRoot)
+	return fromDirectoryPath(dirPath, repoRelativePath, withinRepo, permissions, indexEntries)
 }
 
-func discoverGitRepo(path string) *git.Repository {
-	absPath, err := filepath.Abs(path)
+func discoverGitRepo(dirPath string) *git.Repository {
+	absPath, err := filepath.Abs(dirPath)
 	if err != nil {
 		return nil
 	}

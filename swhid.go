@@ -224,7 +224,7 @@ func validObjectHash(value string) bool {
 		return false
 	}
 	for i := range value {
-		if value[i] < '0' || value[i] > '9' && (value[i] < 'a' || value[i] > 'f') {
+		if value[i] < '0' || (value[i] > '9' && (value[i] < 'a' || value[i] > 'f')) {
 			return false
 		}
 	}
