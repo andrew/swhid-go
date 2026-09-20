@@ -185,3 +185,38 @@ func TestFromDirectoryPathReportsInvalidGitIndex(t *testing.T) {
 		t.Fatal("FromDirectoryPath() expected invalid index error")
 	}
 }
+
+func TestFromDirectoryPathUsesIndexModeFromRepositorySubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit() error = %v", err)
+	}
+	sourceDir := filepath.Join(dir, "src")
+	if err := os.Mkdir(sourceDir, 0755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "tool"), nil, 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	idx := &index.Index{Version: 2, Entries: []*index.Entry{{
+		Name: "src/tool",
+		Mode: filemode.Executable,
+		Hash: plumbing.NewHash(emptyBlobHash),
+	}}}
+	if err := repo.Storer.SetIndex(idx); err != nil {
+		t.Fatalf("SetIndex() error = %v", err)
+	}
+
+	want, err := FromDirectory([]objects.DirectoryEntry{{Name: "tool", Type: objects.EntryTypeExecutable, Target: emptyBlobHash}})
+	if err != nil {
+		t.Fatalf("FromDirectory() error = %v", err)
+	}
+	got, err := FromDirectoryPath(sourceDir)
+	if err != nil {
+		t.Fatalf("FromDirectoryPath() error = %v", err)
+	}
+	if got.ObjectHash != want.ObjectHash {
+		t.Errorf("FromDirectoryPath() hash = %s, want %s", got.ObjectHash, want.ObjectHash)
+	}
+}

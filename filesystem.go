@@ -3,8 +3,8 @@ package swhid
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/andrew/swhid-go/objects"
@@ -50,7 +50,8 @@ func FromDirectoryPathWithOptions(path string, gitRepo *git.Repository, permissi
 		return nil, fmt.Errorf("find Git worktree: %w", err)
 	}
 
-	return fromDirectoryPath(path, repoRoot, permissions, indexEntries)
+	repoRelativePath, withinRepo := relativePathInRepo(path, repoRoot)
+	return fromDirectoryPath(path, repoRelativePath, withinRepo, permissions, indexEntries)
 }
 
 func discoverGitRepo(path string) *git.Repository {
@@ -108,15 +109,15 @@ func repositoryRoot(repo *git.Repository) (string, error) {
 	return root, nil
 }
 
-func fromDirectoryPath(dirPath, repoRoot string, permissions map[string]os.FileMode, indexEntries map[string]indexedEntry) (*Identifier, error) {
-	entries, err := buildEntries(dirPath, repoRoot, permissions, indexEntries)
+func fromDirectoryPath(dirPath, repoRelativePath string, withinRepo bool, permissions map[string]os.FileMode, indexEntries map[string]indexedEntry) (*Identifier, error) {
+	entries, err := buildEntries(dirPath, repoRelativePath, withinRepo, permissions, indexEntries)
 	if err != nil {
 		return nil, err
 	}
 	return FromDirectory(entries)
 }
 
-func buildEntries(dirPath, repoRoot string, permissions map[string]os.FileMode, indexEntries map[string]indexedEntry) ([]objects.DirectoryEntry, error) {
+func buildEntries(dirPath, repoRelativePath string, withinRepo bool, permissions map[string]os.FileMode, indexEntries map[string]indexedEntry) ([]objects.DirectoryEntry, error) {
 	dirEntries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return nil, err
@@ -129,7 +130,10 @@ func buildEntries(dirPath, repoRoot string, permissions map[string]os.FileMode, 
 			continue
 		}
 		fullPath := filepath.Join(dirPath, name)
-		relPath := relativePathInRepo(fullPath, repoRoot)
+		relPath := ""
+		if withinRepo {
+			relPath = path.Join(repoRelativePath, name)
+		}
 
 		indexEntry, tracked := indexEntries[relPath]
 		if tracked && indexEntry.mode == filemode.Submodule {
@@ -159,7 +163,7 @@ func buildEntries(dirPath, repoRoot string, permissions map[string]os.FileMode, 
 				return nil, err
 			}
 		case info.IsDir():
-			subID, err := fromDirectoryPath(fullPath, repoRoot, permissions, indexEntries)
+			subID, err := fromDirectoryPath(fullPath, relPath, withinRepo, permissions, indexEntries)
 			if err != nil {
 				return nil, err
 			}
@@ -181,9 +185,6 @@ func buildEntries(dirPath, repoRoot string, permissions map[string]os.FileMode, 
 		entries = append(entries, entry)
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].SortKey() < entries[j].SortKey()
-	})
 	return entries, nil
 }
 
@@ -219,20 +220,23 @@ func isExecutable(fullPath, relPath string, info os.FileInfo, permissions map[st
 	return info.Mode()&0111 != 0
 }
 
-func relativePathInRepo(fullPath, repoRoot string) string {
+func relativePathInRepo(fullPath, repoRoot string) (string, bool) {
 	if repoRoot == "" {
-		return ""
+		return "", false
 	}
 	absPath, err := filepath.Abs(fullPath)
 	if err != nil {
-		return ""
+		return "", false
 	}
-	if resolved, err := filepath.EvalSymlinks(filepath.Dir(absPath)); err == nil {
-		absPath = filepath.Join(resolved, filepath.Base(absPath))
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		absPath = resolved
 	}
 	relPath, err := filepath.Rel(repoRoot, absPath)
 	if err != nil || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
-		return ""
+		return "", false
 	}
-	return filepath.ToSlash(relPath)
+	if relPath == "." {
+		return "", true
+	}
+	return filepath.ToSlash(relPath), true
 }

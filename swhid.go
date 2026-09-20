@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -25,7 +24,7 @@ const (
 	Scheme                  = "swh"
 	SchemeVersion           = 1
 	ObjectIDLen             = 40
-	corePartCount           = 4
+	schemeVersionString     = "1"
 	qualifierRangePartCount = 2
 	qualifierOrigin         = "origin"
 	qualifierVisit          = "visit"
@@ -53,8 +52,6 @@ var validObjectTypes = map[ObjectType]bool{
 	ObjectTypeRelease:   true,
 	ObjectTypeSnapshot:  true,
 }
-
-var hashRegex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // Qualifier keys in canonical order.
 var canonicalQualifierOrder = []string{
@@ -119,15 +116,19 @@ func (id *Identifier) UnmarshalText(text []byte) error {
 
 // NewIdentifier creates a new Identifier with validation.
 func NewIdentifier(objectType ObjectType, objectHash string, qualifiers map[string]string) (*Identifier, error) {
+	return newIdentifier(objectType, objectHash, qualifiers, true)
+}
+
+func newIdentifier(objectType ObjectType, objectHash string, qualifiers map[string]string, copyQualifiers bool) (*Identifier, error) {
 	if !validObjectTypes[objectType] {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidObjectType, objectType)
 	}
 
-	if !hashRegex.MatchString(objectHash) {
+	if !validObjectHash(objectHash) {
 		return nil, fmt.Errorf("%w: must be %d hex digits", ErrInvalidObjectHash, ObjectIDLen)
 	}
 
-	qualifiers, err := validateQualifiers(objectType, qualifiers)
+	qualifiers, err := validateQualifiers(objectType, qualifiers, copyQualifiers)
 	if err != nil {
 		return nil, err
 	}
@@ -150,40 +151,21 @@ func Parse(swhidString string) (*Identifier, error) {
 		return nil, fmt.Errorf("%w: whitespace is not allowed", ErrInvalidFormat)
 	}
 
-	// Split core part from qualifiers
-	parts := strings.Split(swhidString, ";")
-	corePart := parts[0]
-	qualifierParts := parts[1:]
-
-	// Parse core part
-	coreParts := strings.Split(corePart, ":")
-	if len(coreParts) != corePartCount {
-		return nil, ErrInvalidFormat
+	corePart, qualifierString, hasQualifiers := strings.Cut(swhidString, ";")
+	objectType, objectHash, err := parseCoreIdentifier(corePart)
+	if err != nil {
+		return nil, err
 	}
 
-	scheme := coreParts[0]
-	versionStr := coreParts[1]
-	objectType := ObjectType(coreParts[2])
-	objectHash := coreParts[3]
-
-	if scheme != Scheme {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidScheme, scheme)
-	}
-
-	if versionStr != "1" {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidVersion, versionStr)
-	}
-
-	if !validObjectTypes[objectType] {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidObjectType, objectType)
-	}
-
-	if !hashRegex.MatchString(objectHash) {
-		return nil, fmt.Errorf("%w: must be %d hex digits", ErrInvalidObjectHash, ObjectIDLen)
-	}
-
-	qualifiers := make(map[string]string)
-	for _, part := range qualifierParts {
+	qualifiers := make(map[string]string, len(canonicalQualifierOrder))
+	for hasQualifiers {
+		part := qualifierString
+		if nextPart, remaining, found := strings.Cut(qualifierString, ";"); found {
+			part = nextPart
+			qualifierString = remaining
+		} else {
+			hasQualifiers = false
+		}
 		if part == "" {
 			return nil, fmt.Errorf("%w: empty qualifier", ErrInvalidQualifier)
 		}
@@ -205,7 +187,48 @@ func Parse(swhidString string) (*Identifier, error) {
 		qualifiers[key] = value
 	}
 
-	return NewIdentifier(objectType, objectHash, qualifiers)
+	return newIdentifier(objectType, objectHash, qualifiers, false)
+}
+
+func parseCoreIdentifier(value string) (ObjectType, string, error) {
+	scheme, rest, ok := strings.Cut(value, ":")
+	if !ok {
+		return "", "", ErrInvalidFormat
+	}
+	version, rest, ok := strings.Cut(rest, ":")
+	if !ok {
+		return "", "", ErrInvalidFormat
+	}
+	objectTypeValue, objectHash, ok := strings.Cut(rest, ":")
+	if !ok || strings.ContainsRune(objectHash, ':') {
+		return "", "", ErrInvalidFormat
+	}
+	if scheme != Scheme {
+		return "", "", fmt.Errorf("%w: %s", ErrInvalidScheme, scheme)
+	}
+	if version != schemeVersionString {
+		return "", "", fmt.Errorf("%w: %s", ErrInvalidVersion, version)
+	}
+	objectType := ObjectType(objectTypeValue)
+	if !validObjectTypes[objectType] {
+		return "", "", fmt.Errorf("%w: %s", ErrInvalidObjectType, objectType)
+	}
+	if !validObjectHash(objectHash) {
+		return "", "", fmt.Errorf("%w: must be %d hex digits", ErrInvalidObjectHash, ObjectIDLen)
+	}
+	return objectType, objectHash, nil
+}
+
+func validObjectHash(value string) bool {
+	if len(value) != ObjectIDLen {
+		return false
+	}
+	for i := range value {
+		if value[i] < '0' || value[i] > '9' && (value[i] < 'a' || value[i] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // String returns the canonical SWHID string representation.
@@ -262,12 +285,22 @@ func formatQualifiers(quals map[string]string) string {
 
 func encodeQualifierValue(key, value string) string {
 	const hexDigits = "0123456789ABCDEF"
+	needsEscaping := false
+	for _, r := range value {
+		if qualifierRuneNeedsEscaping(key, r) {
+			needsEscaping = true
+			break
+		}
+	}
+	if !needsEscaping {
+		return value
+	}
 	var encoded strings.Builder
 	encoded.Grow(len(value))
 	for len(value) > 0 {
 		r, size := utf8.DecodeRuneInString(value)
 		part := value[:size]
-		if r == '%' || r == ';' || unicode.IsSpace(r) || key == qualifierPath && (r == '?' || r == '#') {
+		if qualifierRuneNeedsEscaping(key, r) {
 			for _, b := range []byte(part) {
 				_ = encoded.WriteByte('%')
 				_ = encoded.WriteByte(hexDigits[b>>4])
@@ -281,12 +314,19 @@ func encodeQualifierValue(key, value string) string {
 	return encoded.String()
 }
 
+func qualifierRuneNeedsEscaping(key string, value rune) bool {
+	return value == '%' || value == ';' || unicode.IsSpace(value) || key == qualifierPath && (value == '?' || value == '#')
+}
+
 func decodeQualifierValue(value string) (string, error) {
 	return url.PathUnescape(value)
 }
 
-func validateQualifiers(objectType ObjectType, qualifiers map[string]string) (map[string]string, error) {
-	validated := make(map[string]string, len(qualifiers))
+func validateQualifiers(objectType ObjectType, qualifiers map[string]string, copyInput bool) (map[string]string, error) {
+	validated := qualifiers
+	if copyInput || validated == nil {
+		validated = make(map[string]string, len(qualifiers))
+	}
 	for key, value := range qualifiers {
 		if !knownQualifier(key) {
 			return nil, fmt.Errorf("%w: %q", ErrInvalidQualifier, key)
@@ -297,7 +337,9 @@ func validateQualifiers(objectType ObjectType, qualifiers map[string]string) (ma
 		if err := validateQualifier(key, value); err != nil {
 			return nil, fmt.Errorf("%w %s: %v", ErrInvalidQualifier, key, err)
 		}
-		validated[key] = value
+		if copyInput {
+			validated[key] = value
+		}
 	}
 
 	_, hasLines := validated[qualifierLines]
@@ -325,11 +367,11 @@ func validateQualifier(key, value string) error {
 	case qualifierVisit:
 		return validateCoreQualifier(value, ObjectTypeSnapshot)
 	case qualifierAnchor:
-		id, err := Parse(value)
-		if err != nil || len(id.Qualifiers) != 0 {
+		objectType, _, err := parseCoreIdentifier(value)
+		if err != nil {
 			return errors.New("anchor must be a core SWHID")
 		}
-		if id.ObjectType == ObjectTypeContent {
+		if objectType == ObjectTypeContent {
 			return errors.New("anchor cannot identify content")
 		}
 	case qualifierPath:
@@ -354,8 +396,8 @@ func knownQualifier(key string) bool {
 }
 
 func validateCoreQualifier(value string, objectType ObjectType) error {
-	id, err := Parse(value)
-	if err != nil || len(id.Qualifiers) != 0 || id.ObjectType != objectType {
+	parsedType, _, err := parseCoreIdentifier(value)
+	if err != nil || parsedType != objectType {
 		return fmt.Errorf("must be a core %s SWHID", objectType)
 	}
 	return nil

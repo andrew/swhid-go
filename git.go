@@ -91,6 +91,11 @@ func FromSnapshot(repoPath string) (*Identifier, error) {
 		return nil, fmt.Errorf("failed to get references: %w", err)
 	}
 
+	type resolvedTarget struct {
+		targetType objects.BranchTargetType
+		target     string
+	}
+	resolvedTargets := make(map[plumbing.Hash]resolvedTarget)
 	err = refs.ForEach(func(ref *plumbing.Reference) error {
 		if !ref.Name().IsBranch() && !ref.Name().IsTag() {
 			return nil
@@ -101,10 +106,16 @@ func FromSnapshot(repoPath string) (*Identifier, error) {
 			branch.TargetType = objects.BranchTargetAlias
 			branch.Target = ref.Target().String()
 		} else {
-			branch.TargetType, branch.Target, err = resolveRefTarget(repo, ref.Hash())
-			if err != nil {
-				return fmt.Errorf("failed to resolve reference %s: %w", ref.Name(), err)
+			resolved, ok := resolvedTargets[ref.Hash()]
+			if !ok {
+				resolved.targetType, resolved.target, err = resolveRefTarget(repo, ref.Hash())
+				if err != nil {
+					return fmt.Errorf("failed to resolve reference %s: %w", ref.Name(), err)
+				}
+				resolvedTargets[ref.Hash()] = resolved
 			}
+			branch.TargetType = resolved.targetType
+			branch.Target = resolved.target
 		}
 		branches = append(branches, branch)
 		return nil

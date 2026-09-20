@@ -2,11 +2,12 @@ package objects
 
 import (
 	"bytes"
-	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
 )
+
+const directoryEntryFixedSize = 6 + 1 + 1 + objectHashBytes
 
 // EntryType represents the type of a directory entry.
 type EntryType int
@@ -75,10 +76,14 @@ func serializeEntries(entries []DirectoryEntry) ([]byte, error) {
 	sorted := make([]DirectoryEntry, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].SortKey() < sorted[j].SortKey()
+		return directoryEntryLess(sorted[i], sorted[j])
 	})
 
-	var result []byte
+	serializedSize := 0
+	for i := range sorted {
+		serializedSize += directoryEntryFixedSize + len(sorted[i].Name)
+	}
+	result := make([]byte, 0, serializedSize)
 	seen := make(map[string]struct{}, len(sorted))
 	for _, entry := range sorted {
 		if entry.Name == "" || strings.ContainsAny(entry.Name, "/\x00") {
@@ -100,12 +105,36 @@ func serializeEntries(entries []DirectoryEntry) ([]byte, error) {
 		result = append(result, []byte(entry.Name)...)
 		result = append(result, 0)
 
-		hashBytes, err := hex.DecodeString(entry.Target)
-		if err != nil || len(hashBytes) != 20 {
+		hashBytes, ok := decodeObjectID(entry.Target)
+		if !ok {
 			return nil, fmt.Errorf("invalid target hash for %q", entry.Name)
 		}
-		result = append(result, hashBytes...)
+		result = append(result, hashBytes[:]...)
 	}
 
 	return result, nil
+}
+
+func directoryEntryLess(left, right DirectoryEntry) bool {
+	commonLength := min(len(left.Name), len(right.Name))
+	for i := range commonLength {
+		if left.Name[i] != right.Name[i] {
+			return left.Name[i] < right.Name[i]
+		}
+	}
+	if len(left.Name) == len(right.Name) {
+		return false
+	}
+	if len(left.Name) == commonLength {
+		terminator := byte(0)
+		if left.Type == EntryTypeDirectory {
+			terminator = '/'
+		}
+		return terminator < right.Name[commonLength]
+	}
+	terminator := byte(0)
+	if right.Type == EntryTypeDirectory {
+		terminator = '/'
+	}
+	return left.Name[commonLength] < terminator
 }

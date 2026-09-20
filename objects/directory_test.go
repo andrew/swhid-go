@@ -1,6 +1,7 @@
 package objects
 
 import (
+	"sort"
 	"testing"
 )
 
@@ -140,6 +141,30 @@ func TestComputeDirectoryHashPreservesExplicitPermissions(t *testing.T) {
 	const want = "df143af729209e32ee1bcfb027177885e78eac09"
 	if hash != want {
 		t.Errorf("ComputeDirectoryHash() = %s, want %s", hash, want)
+	}
+}
+
+func TestDirectoryEntryComparatorMatchesSortKey(t *testing.T) {
+	entries := []DirectoryEntry{
+		{Name: "b", Type: EntryTypeFile},
+		{Name: "a", Type: EntryTypeDirectory},
+		{Name: "a0", Type: EntryTypeFile},
+		{Name: "a.", Type: EntryTypeFile},
+		{Name: "aa", Type: EntryTypeDirectory},
+	}
+	want := append([]DirectoryEntry(nil), entries...)
+	sort.Slice(want, func(i, j int) bool {
+		return want[i].SortKey() < want[j].SortKey()
+	})
+	got := append([]DirectoryEntry(nil), entries...)
+	sort.Slice(got, func(i, j int) bool {
+		return directoryEntryLess(got[i], got[j])
+	})
+
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("entry %d = %#v, want %#v", i, got[i], want[i])
+		}
 	}
 }
 
