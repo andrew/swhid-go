@@ -1,11 +1,13 @@
 package objects
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
+	"bytes"
 	"fmt"
 	"sort"
+	"strings"
 )
+
+const directoryEntryFixedSize = 6 + 1 + 1 + objectHashBytes
 
 // EntryType represents the type of a directory entry.
 type EntryType int
@@ -62,37 +64,77 @@ func (e *DirectoryEntry) SortKey() string {
 }
 
 // ComputeDirectoryHash computes the Git tree hash for a directory.
-func ComputeDirectoryHash(entries []DirectoryEntry) string {
-	serialized := serializeEntries(entries)
-	header := fmt.Sprintf("tree %d\x00", len(serialized))
-
-	h := sha1.New()
-	h.Write([]byte(header))
-	h.Write(serialized)
-	return hex.EncodeToString(h.Sum(nil))
+func ComputeDirectoryHash(entries []DirectoryEntry) (string, error) {
+	serialized, err := serializeEntries(entries)
+	if err != nil {
+		return "", err
+	}
+	return computeObjectHash("tree", int64(len(serialized)), bytes.NewReader(serialized))
 }
 
-func serializeEntries(entries []DirectoryEntry) []byte {
-	// Sort entries by sort key
+func serializeEntries(entries []DirectoryEntry) ([]byte, error) {
 	sorted := make([]DirectoryEntry, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].SortKey() < sorted[j].SortKey()
+		return directoryEntryLess(sorted[i], sorted[j])
 	})
 
-	var result []byte
+	serializedSize := 0
+	for i := range sorted {
+		serializedSize += directoryEntryFixedSize + len(sorted[i].Name)
+	}
+	result := make([]byte, 0, serializedSize)
+	seen := make(map[string]struct{}, len(sorted))
 	for _, entry := range sorted {
-		// Format: "<perms> <name>\0<binary_hash>"
+		if entry.Name == "" || strings.ContainsAny(entry.Name, "/\x00") {
+			return nil, fmt.Errorf("invalid directory entry name %q", entry.Name)
+		}
+		switch entry.Type {
+		case EntryTypeFile, EntryTypeExecutable, EntryTypeDirectory, EntryTypeSymlink, EntryTypeRevision:
+		default:
+			return nil, fmt.Errorf("invalid directory entry type %d for %q", entry.Type, entry.Name)
+		}
+		if _, exists := seen[entry.Name]; exists {
+			return nil, fmt.Errorf("duplicate directory entry name %q", entry.Name)
+		}
+		seen[entry.Name] = struct{}{}
+
 		perms := entry.Permissions()
 		result = append(result, []byte(perms)...)
 		result = append(result, ' ')
 		result = append(result, []byte(entry.Name)...)
 		result = append(result, 0)
 
-		// Convert hex hash to binary
-		hashBytes, _ := hex.DecodeString(entry.Target)
-		result = append(result, hashBytes...)
+		hashBytes, ok := decodeObjectID(entry.Target)
+		if !ok {
+			return nil, fmt.Errorf("invalid target hash for %q", entry.Name)
+		}
+		result = append(result, hashBytes[:]...)
 	}
 
-	return result
+	return result, nil
+}
+
+func directoryEntryLess(left, right DirectoryEntry) bool {
+	commonLength := min(len(left.Name), len(right.Name))
+	for i := range commonLength {
+		if left.Name[i] != right.Name[i] {
+			return left.Name[i] < right.Name[i]
+		}
+	}
+	if len(left.Name) == len(right.Name) {
+		return false
+	}
+	if len(left.Name) == commonLength {
+		terminator := byte(0)
+		if left.Type == EntryTypeDirectory {
+			terminator = '/'
+		}
+		return terminator < right.Name[commonLength]
+	}
+	terminator := byte(0)
+	if right.Type == EntryTypeDirectory {
+		terminator = '/'
+	}
+	return left.Name[commonLength] < terminator
 }

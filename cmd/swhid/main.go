@@ -2,285 +2,423 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
+	"sort"
 	"strings"
 
 	"github.com/andrew/swhid-go"
 )
 
-var (
-	formatFlag     string
-	qualifierFlags qualifierList
+const (
+	exitSuccess      = 0
+	exitCommandError = 1
+	exitUsageError   = 2
+	qualifierParts   = 2
+	optionalRefArgs  = 2
+	releaseArgs      = 2
+	formatText       = "text"
+	formatRaw        = "raw"
+	formatJSON       = "json"
+	formatJSONL      = "jsonl"
+	supportedFormats = "text, raw, json, jsonl"
 )
+
+var (
+	version       = "devel"
+	readBuildInfo = debug.ReadBuildInfo
+)
+
+type commandOptions struct {
+	format     string
+	qualifiers qualifierList
+}
 
 type qualifierList map[string]string
 
+type usageError struct {
+	message string
+}
+
+func (e *usageError) Error() string {
+	return e.message
+}
+
+type identifierOutput struct {
+	SWHID      string            `json:"swhid"`
+	Core       string            `json:"core"`
+	ObjectType swhid.ObjectType  `json:"object_type"`
+	ObjectHash string            `json:"object_hash"`
+	Qualifiers map[string]string `json:"qualifiers"`
+}
+
 func (q *qualifierList) String() string {
-	return fmt.Sprintf("%v", *q)
+	keys := make([]string, 0, len(*q))
+	for key := range *q {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+(*q)[key])
+	}
+	return strings.Join(parts, ",")
 }
 
 func (q *qualifierList) Set(value string) error {
-	parts := strings.SplitN(value, "=", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(value, "=", qualifierParts)
+	if len(parts) != 2 || parts[0] == "" {
 		return fmt.Errorf("invalid qualifier format: %s (expected KEY=VALUE)", value)
+	}
+	if _, exists := (*q)[parts[0]]; exists {
+		return fmt.Errorf("duplicate qualifier: %s", parts[0])
 	}
 	(*q)[parts[0]] = parts[1]
 	return nil
 }
 
-func init() {
-	qualifierFlags = make(qualifierList)
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-func main() {
-	if len(os.Args) < 2 {
-		showHelp()
-		os.Exit(0)
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		showHelp(stdout)
+		return exitSuccess
+	}
+	if args[0] == "version" || args[0] == "-version" || args[0] == "--version" {
+		_, _ = fmt.Fprintf(stdout, "swhid %s\n", reportedVersion())
+		return exitSuccess
 	}
 
-	command := os.Args[1]
-
-	// Parse flags after command
-	fs := flag.NewFlagSet(command, flag.ExitOnError)
-	fs.StringVar(&formatFlag, "f", "text", "Output format (text, json)")
-	fs.StringVar(&formatFlag, "format", "text", "Output format (text, json)")
-	fs.Var(&qualifierFlags, "q", "Add qualifier (KEY=VALUE)")
-	fs.Var(&qualifierFlags, "qualifier", "Add qualifier (KEY=VALUE)")
-
-	// Skip the command name when parsing
-	if len(os.Args) > 2 {
-		fs.Parse(os.Args[2:])
+	command := args[0]
+	options := commandOptions{qualifiers: make(qualifierList)}
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&options.format, "f", formatText, "Output format ("+supportedFormats+")")
+	fs.StringVar(&options.format, "format", formatText, "Output format ("+supportedFormats+")")
+	fs.Var(&options.qualifiers, "q", "Add qualifier (KEY=VALUE)")
+	fs.Var(&options.qualifiers, "qualifier", "Add qualifier (KEY=VALUE)")
+	if err := fs.Parse(optionsFirst(args[1:])); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitSuccess
+		}
+		return exitUsageError
 	}
-
-	args := fs.Args()
+	if !validFormat(options.format) {
+		_, _ = fmt.Fprintf(stderr, "Error: unsupported output format %q; supported formats: %s\n", options.format, supportedFormats)
+		return exitUsageError
+	}
+	if command == "parse" && len(options.qualifiers) != 0 {
+		_, _ = fmt.Fprintln(stderr, "Error: qualifiers cannot be added when parsing a SWHID")
+		return exitUsageError
+	}
 
 	var err error
 	switch command {
 	case "parse":
-		err = runParse(args)
+		err = runParse(fs.Args(), options, stdout)
 	case "content":
-		err = runContent()
+		err = runContent(stdin, options, stdout)
 	case "directory":
-		err = runDirectory(args)
+		err = runDirectory(fs.Args(), options, stdout)
 	case "revision":
-		err = runRevision(args)
+		err = runRevision(fs.Args(), options, stdout)
 	case "release":
-		err = runRelease(args)
+		err = runRelease(fs.Args(), options, stdout)
 	case "snapshot":
-		err = runSnapshot(args)
+		err = runSnapshot(fs.Args(), options, stdout)
 	case "help", "-h", "--help":
-		showHelp()
+		showHelp(stdout)
+		return exitSuccess
 	default:
-		showHelp()
+		_, _ = fmt.Fprintf(stderr, "Error: unknown command %q\n", command)
+		showHelp(stderr)
+		return exitUsageError
 	}
 
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+		var usageErr *usageError
+		if errors.As(err, &usageErr) {
+			return exitUsageError
+		}
+		return exitCommandError
+	}
+	return exitSuccess
+}
+
+func reportedVersion() string {
+	if version != "devel" {
+		return version
+	}
+	info, ok := readBuildInfo()
+	if !ok || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return version
+	}
+	return info.Main.Version
+}
+
+func validFormat(format string) bool {
+	switch format {
+	case formatText, formatRaw, formatJSON, formatJSONL:
+		return true
+	default:
+		return false
 	}
 }
 
-func runParse(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("SWHID string required")
+func optionsFirst(args []string) []string {
+	options := make([]string, 0, len(args))
+	positional := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, arg)
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		switch arg {
+		case "-f", "-format", "--format", "-q", "-qualifier", "--qualifier":
+			options = append(options, arg)
+			if i+1 < len(args) {
+				i++
+				options = append(options, args[i])
+			}
+		case "-h", "--help":
+			options = append(options, arg)
+		default:
+			if strings.HasPrefix(arg, "-") {
+				options = append(options, arg)
+			} else {
+				positional = append(positional, arg)
+			}
+		}
 	}
+	return append(options, positional...)
+}
 
+func newUsageError(message string) error {
+	return &usageError{message: message}
+}
+
+func runParse(args []string, options commandOptions, output io.Writer) error {
+	if len(args) != 1 {
+		return newUsageError("exactly one SWHID string is required")
+	}
 	id, err := swhid.Parse(args[0])
 	if err != nil {
 		return err
 	}
-
-	outputIdentifier(id)
-	return nil
+	return outputIdentifier(output, id, options.format)
 }
 
-func runContent() error {
-	data, err := io.ReadAll(os.Stdin)
+func runContent(input io.Reader, options commandOptions, output io.Writer) error {
+	id, err := contentIdentifier(input)
 	if err != nil {
-		return fmt.Errorf("failed to read stdin: %w", err)
+		return err
 	}
-
-	id := swhid.FromContent(data)
-	id = applyQualifiers(id)
-	outputIdentifier(id)
-	return nil
+	id, err = applyQualifiers(id, options.qualifiers)
+	if err != nil {
+		return err
+	}
+	return outputIdentifier(output, id, options.format)
 }
 
-func runDirectory(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("directory path required")
-	}
-
-	path := args[0]
-
-	info, err := os.Stat(path)
+func contentIdentifier(input io.Reader) (*swhid.Identifier, error) {
+	temp, err := os.CreateTemp("", "swhid-content-*")
 	if err != nil {
-		return fmt.Errorf("path does not exist: %s", path)
+		return nil, fmt.Errorf("create content spool: %w", err)
+	}
+	name := temp.Name()
+	defer func() { _ = os.Remove(name) }()
+
+	size, copyErr := io.Copy(temp, input)
+	if copyErr != nil {
+		_ = temp.Close()
+		return nil, fmt.Errorf("read content: %w", copyErr)
+	}
+	if _, err := temp.Seek(0, io.SeekStart); err != nil {
+		_ = temp.Close()
+		return nil, fmt.Errorf("rewind content: %w", err)
+	}
+	id, hashErr := swhid.FromContentReader(temp, size)
+	closeErr := temp.Close()
+	if hashErr != nil {
+		return nil, hashErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return id, nil
+}
+
+func runDirectory(args []string, options commandOptions, output io.Writer) error {
+	if len(args) != 1 {
+		return newUsageError("exactly one directory path is required")
+	}
+	info, err := os.Stat(args[0])
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", args[0], err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("path is not a directory: %s", path)
+		return fmt.Errorf("path is not a directory: %s", args[0])
 	}
-
-	id, err := swhid.FromDirectoryPath(path)
+	id, err := swhid.FromDirectoryPath(args[0])
 	if err != nil {
 		return err
 	}
-
-	id = applyQualifiers(id)
-	outputIdentifier(id)
-	return nil
+	id, err = applyQualifiers(id, options.qualifiers)
+	if err != nil {
+		return err
+	}
+	return outputIdentifier(output, id, options.format)
 }
 
-func runRevision(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("repository path required")
+func runRevision(args []string, options commandOptions, output io.Writer) error {
+	if len(args) < 1 || len(args) > optionalRefArgs {
+		return newUsageError("repository path and at most one reference are required")
 	}
-
-	repoPath := args[0]
 	ref := "HEAD"
-	if len(args) > 1 {
+	if len(args) == optionalRefArgs {
 		ref = args[1]
 	}
-
-	id, err := swhid.FromRevision(repoPath, ref)
+	id, err := swhid.FromRevision(args[0], ref)
 	if err != nil {
 		return err
 	}
-
-	id = applyQualifiers(id)
-	outputIdentifier(id)
-	return nil
-}
-
-func runRelease(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("repository path and tag name required")
-	}
-
-	repoPath := args[0]
-	tagName := args[1]
-
-	id, err := swhid.FromRelease(repoPath, tagName)
+	id, err = applyQualifiers(id, options.qualifiers)
 	if err != nil {
 		return err
 	}
-
-	id = applyQualifiers(id)
-	outputIdentifier(id)
-	return nil
+	return outputIdentifier(output, id, options.format)
 }
 
-func runSnapshot(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("repository path required")
+func runRelease(args []string, options commandOptions, output io.Writer) error {
+	if len(args) != releaseArgs {
+		return newUsageError("repository path and tag name are required")
 	}
-
-	repoPath := args[0]
-
-	id, err := swhid.FromSnapshot(repoPath)
+	id, err := swhid.FromRelease(args[0], args[1])
 	if err != nil {
 		return err
 	}
-
-	id = applyQualifiers(id)
-	outputIdentifier(id)
-	return nil
+	id, err = applyQualifiers(id, options.qualifiers)
+	if err != nil {
+		return err
+	}
+	return outputIdentifier(output, id, options.format)
 }
 
-func applyQualifiers(id *swhid.Identifier) *swhid.Identifier {
-	if len(qualifierFlags) == 0 {
-		return id
+func runSnapshot(args []string, options commandOptions, output io.Writer) error {
+	if len(args) != 1 {
+		return newUsageError("exactly one repository path is required")
 	}
-
-	quals := make(map[string]string)
-	for k, v := range qualifierFlags {
-		quals[k] = v
+	id, err := swhid.FromSnapshot(args[0])
+	if err != nil {
+		return err
 	}
-	return id.WithQualifiers(quals)
+	id, err = applyQualifiers(id, options.qualifiers)
+	if err != nil {
+		return err
+	}
+	return outputIdentifier(output, id, options.format)
 }
 
-func outputIdentifier(id *swhid.Identifier) {
-	switch formatFlag {
-	case "json":
-		outputJSON(id)
+func applyQualifiers(id *swhid.Identifier, qualifiers qualifierList) (*swhid.Identifier, error) {
+	if len(qualifiers) == 0 {
+		return id, nil
+	}
+	values := make(map[string]string, len(qualifiers))
+	for key, value := range qualifiers {
+		values[key] = value
+	}
+	return id.WithQualifiers(values)
+}
+
+func outputIdentifier(output io.Writer, id *swhid.Identifier, format string) error {
+	switch format {
+	case formatRaw:
+		_, err := fmt.Fprintln(output, id.String())
+		return err
+	case formatJSON:
+		return outputJSON(output, id, true)
+	case formatJSONL:
+		return outputJSON(output, id, false)
 	default:
-		outputText(id)
+		return outputText(output, id)
 	}
 }
 
-func outputText(id *swhid.Identifier) {
-	fmt.Printf("SWHID: %s\n", id.String())
-	fmt.Printf("Core:  %s\n", id.CoreSWHID())
-	fmt.Printf("Type:  %s\n", id.ObjectType)
-	fmt.Printf("Hash:  %s\n", id.ObjectHash)
-
-	if len(id.Qualifiers) > 0 {
-		fmt.Println("Qualifiers:")
-		for key, value := range id.Qualifiers {
-			fmt.Printf("  %s: %s\n", key, value)
+func outputText(output io.Writer, id *swhid.Identifier) error {
+	if _, err := fmt.Fprintf(output, "SWHID: %s\nCore:  %s\nType:  %s\nHash:  %s\n", id.String(), id.CoreSWHID(), id.ObjectType, id.ObjectHash); err != nil {
+		return err
+	}
+	if len(id.Qualifiers) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(output, "Qualifiers:"); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(id.Qualifiers))
+	for key := range id.Qualifiers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if _, err := fmt.Fprintf(output, "  %s: %s\n", key, id.Qualifiers[key]); err != nil {
+			return err
 		}
 	}
+	return nil
 }
 
-func outputJSON(id *swhid.Identifier) {
-	data := map[string]interface{}{
-		"swhid":       id.String(),
-		"core":        id.CoreSWHID(),
-		"object_type": id.ObjectType,
-		"object_hash": id.ObjectHash,
-		"qualifiers":  id.Qualifiers,
+func outputJSON(output io.Writer, id *swhid.Identifier, indent bool) error {
+	data := identifierOutput{
+		SWHID:      id.String(),
+		Core:       id.CoreSWHID(),
+		ObjectType: id.ObjectType,
+		ObjectHash: id.ObjectHash,
+		Qualifiers: id.Qualifiers,
 	}
-
-	encoder := json.NewEncoder(os.Stdout)
-	encoder.SetIndent("", "  ")
-	encoder.Encode(data)
+	encoder := json.NewEncoder(output)
+	if indent {
+		encoder.SetIndent("", "  ")
+	}
+	return encoder.Encode(data)
 }
 
-func showHelp() {
-	fmt.Print(`swhid - Generate and parse SoftWare Hash IDentifiers
+func showHelp(output io.Writer) {
+	_, _ = fmt.Fprint(output, `swhid - Generate and parse SoftWare Hash IDentifiers
 
 Usage:
-  swhid parse <swhid>                   Parse and validate a SWHID
-  swhid content [options]               Generate SWHID for content from stdin
-  swhid directory <path> [options]      Generate SWHID for directory
-  swhid revision <repo> [ref] [options] Generate SWHID for git revision/commit
-  swhid release <repo> <tag> [options]  Generate SWHID for git release/tag
-  swhid snapshot <repo> [options]       Generate SWHID for git snapshot
+  swhid parse [options] <swhid>             Parse and validate a SWHID
+  swhid content [options]                   Generate SWHID for content from stdin
+  swhid directory [options] <path>          Generate SWHID for a directory
+  swhid revision [options] <repo> [ref]     Generate SWHID for a Git revision
+  swhid release [options] <repo> <tag>      Generate SWHID for a Git release
+  swhid snapshot [options] <repo>           Generate SWHID for a Git snapshot
+  swhid version                             Show the swhid version
 
 Options:
-  -f, --format FORMAT              Output format (text, json)
-  -q, --qualifier KEY=VALUE        Add qualifier to generated SWHID
-  -h, --help                       Show this help
+  -f, --format FORMAT              Output format (text, raw, json, jsonl)
+  -q, --qualifier KEY=VALUE        Add qualifier to a generated SWHID
+  -h, --help                       Show command help
+      --version                    Show the swhid version
 
 Examples:
-  # Parse a SWHID
   swhid parse swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2
-
-  # Generate SWHID from file content
   cat file.txt | swhid content
-
-  # Generate SWHID from directory
   swhid directory /path/to/dir
-
-  # Generate SWHID from git commit
-  swhid revision /path/to/repo
   swhid revision /path/to/repo main
-  swhid revision /path/to/repo abc123
-
-  # Generate SWHID from git tag
   swhid release /path/to/repo v1.0.0
-
-  # Generate SWHID from git snapshot
   swhid snapshot /path/to/repo
-
-  # Generate SWHID with qualifiers
   cat file.txt | swhid content -q origin=https://github.com/example/repo
-
-  # Output as JSON
-  swhid parse swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2 -f json
+  swhid parse -f json swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2
+  swhid parse swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2 -f raw
 
 For more information, visit: https://www.swhid.org/
 `)

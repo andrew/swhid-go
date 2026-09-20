@@ -1,7 +1,19 @@
 package objects
 
 import (
+	"strings"
 	"testing"
+)
+
+const (
+	emptyBlobHash     = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+	emptyTreeHash     = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	invalidObjectHash = "invalid"
+	testAuthor        = "Test Author <test@example.com>"
+	testIdentity      = "Test <test@example.com>"
+	testBranchName    = "refs/heads/main"
+	testShortBranch   = "main"
+	testEntryName     = "file"
 )
 
 func TestComputeContentHash(t *testing.T) {
@@ -13,7 +25,7 @@ func TestComputeContentHash(t *testing.T) {
 		{
 			name:     "empty content",
 			data:     []byte{},
-			wantHash: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+			wantHash: emptyBlobHash,
 		},
 		{
 			name:     "hello world",
@@ -34,10 +46,19 @@ func TestComputeContentHash(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hash := ComputeContentHash(tt.data)
+			hash, err := ComputeContentHash(tt.data)
+			if err != nil {
+				t.Fatalf("ComputeContentHash() error = %v", err)
+			}
 			if hash != tt.wantHash {
 				t.Errorf("ComputeContentHash() = %v, want %v", hash, tt.wantHash)
 			}
 		})
+	}
+}
+
+func TestComputeContentHashReaderRejectsWrongSize(t *testing.T) {
+	if _, err := ComputeContentHashReader(strings.NewReader("content"), 3); err == nil {
+		t.Fatal("ComputeContentHashReader() expected size error")
 	}
 }

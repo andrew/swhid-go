@@ -4,15 +4,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/andrew/swhid-go/objects"
+	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/filemode"
+	"github.com/go-git/go-git/v5/plumbing/format/index"
 )
 
 func TestFromDirectoryPath(t *testing.T) {
-	// Create a temp directory for testing
-	tmpDir, err := os.MkdirTemp("", "swhid-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create a test file
 	testFile := filepath.Join(tmpDir, "hello.txt")
@@ -37,12 +38,7 @@ func TestFromDirectoryPath(t *testing.T) {
 }
 
 func TestFromDirectoryPathEmpty(t *testing.T) {
-	// Create a temp directory for testing
-	tmpDir, err := os.MkdirTemp("", "swhid-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	id, err := FromDirectoryPath(tmpDir)
 	if err != nil {
@@ -50,19 +46,14 @@ func TestFromDirectoryPathEmpty(t *testing.T) {
 	}
 
 	// Empty tree hash
-	wantHash := "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	wantHash := emptyTreeHash
 	if id.ObjectHash != wantHash {
 		t.Errorf("FromDirectoryPath() hash = %v, want %v", id.ObjectHash, wantHash)
 	}
 }
 
 func TestFromDirectoryPathNested(t *testing.T) {
-	// Create a temp directory for testing
-	tmpDir, err := os.MkdirTemp("", "swhid-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := t.TempDir()
 
 	// Create nested structure
 	subDir := filepath.Join(tmpDir, "sub")
@@ -102,11 +93,130 @@ func TestFromDirectoryPathFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
+	if err := tmpFile.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(tmpFile.Name()); err != nil && !os.IsNotExist(err) {
+			t.Errorf("Remove() error = %v", err)
+		}
+	})
 
 	_, err = FromDirectoryPath(tmpFile.Name())
 	if err == nil {
 		t.Error("FromDirectoryPath() expected error for file path")
+	}
+}
+
+func TestFromDirectoryPathSkipsDotGitEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("ordinary file"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	nested := filepath.Join(dir, "nested")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, ".git", "ignored"), []byte("ignored"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	want, err := FromDirectory([]objects.DirectoryEntry{{Name: "nested", Type: objects.EntryTypeDirectory, Target: emptyTreeHash}})
+	if err != nil {
+		t.Fatalf("FromDirectory() error = %v", err)
+	}
+	got, err := FromDirectoryPath(dir)
+	if err != nil {
+		t.Fatalf("FromDirectoryPath() error = %v", err)
+	}
+	if got.ObjectHash != want.ObjectHash {
+		t.Errorf("FromDirectoryPath() hash = %s, want %s", got.ObjectHash, want.ObjectHash)
+	}
+}
+
+func TestFromDirectoryPathUsesGitlinkFromIndex(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "vendor", "module"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vendor", "module", "checkout.txt"), []byte("ignored"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	idx := &index.Index{Version: 2, Entries: []*index.Entry{{
+		Name: "vendor/module",
+		Mode: filemode.Submodule,
+		Hash: plumbing.NewHash(emptyTreeHash),
+	}}}
+	if err := repo.Storer.SetIndex(idx); err != nil {
+		t.Fatalf("SetIndex() error = %v", err)
+	}
+
+	vendorID, err := FromDirectory([]objects.DirectoryEntry{{Name: "module", Type: objects.EntryTypeRevision, Target: emptyTreeHash}})
+	if err != nil {
+		t.Fatalf("FromDirectory() error = %v", err)
+	}
+	want, err := FromDirectory([]objects.DirectoryEntry{{Name: "vendor", Type: objects.EntryTypeDirectory, Target: vendorID.ObjectHash}})
+	if err != nil {
+		t.Fatalf("FromDirectory() error = %v", err)
+	}
+	got, err := FromDirectoryPath(dir)
+	if err != nil {
+		t.Fatalf("FromDirectoryPath() error = %v", err)
+	}
+	if got.ObjectHash != want.ObjectHash {
+		t.Errorf("FromDirectoryPath() hash = %s, want %s", got.ObjectHash, want.ObjectHash)
+	}
+}
+
+func TestFromDirectoryPathReportsInvalidGitIndex(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := git.PlainInit(dir, false); err != nil {
+		t.Fatalf("PlainInit() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git", "index"), []byte("invalid index"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	if _, err := FromDirectoryPath(dir); err == nil {
+		t.Fatal("FromDirectoryPath() expected invalid index error")
+	}
+}
+
+func TestFromDirectoryPathUsesIndexModeFromRepositorySubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatalf("PlainInit() error = %v", err)
+	}
+	sourceDir := filepath.Join(dir, "src")
+	if err := os.Mkdir(sourceDir, 0755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "tool"), nil, 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	idx := &index.Index{Version: 2, Entries: []*index.Entry{{
+		Name: "src/tool",
+		Mode: filemode.Executable,
+		Hash: plumbing.NewHash(emptyBlobHash),
+	}}}
+	if err := repo.Storer.SetIndex(idx); err != nil {
+		t.Fatalf("SetIndex() error = %v", err)
+	}
+
+	want, err := FromDirectory([]objects.DirectoryEntry{{Name: "tool", Type: objects.EntryTypeExecutable, Target: emptyBlobHash}})
+	if err != nil {
+		t.Fatalf("FromDirectory() error = %v", err)
+	}
+	got, err := FromDirectoryPath(sourceDir)
+	if err != nil {
+		t.Fatalf("FromDirectoryPath() error = %v", err)
+	}
+	if got.ObjectHash != want.ObjectHash {
+		t.Errorf("FromDirectoryPath() hash = %s, want %s", got.ObjectHash, want.ObjectHash)
 	}
 }

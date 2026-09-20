@@ -1,10 +1,11 @@
 package objects
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
+	"bytes"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // BranchTargetType represents the type of target a branch points to.
@@ -28,60 +29,103 @@ type Branch struct {
 }
 
 // ComputeSnapshotHash computes the hash for a snapshot.
-func ComputeSnapshotHash(branches []Branch) string {
-	serialized := serializeBranches(branches)
-	header := fmt.Sprintf("snapshot %d\x00", len(serialized))
-
-	h := sha1.New()
-	h.Write([]byte(header))
-	h.Write(serialized)
-	return hex.EncodeToString(h.Sum(nil))
+func ComputeSnapshotHash(branches []Branch) (string, error) {
+	serialized, err := serializeBranches(branches)
+	if err != nil {
+		return "", err
+	}
+	return computeObjectHash("snapshot", int64(len(serialized)), bytes.NewReader(serialized))
 }
 
-func serializeBranches(branches []Branch) []byte {
-	// Sort branches by name
+func serializeBranches(branches []Branch) ([]byte, error) {
 	sorted := make([]Branch, len(branches))
 	copy(sorted, branches)
 	sort.Slice(sorted, func(i, j int) bool {
 		return sorted[i].Name < sorted[j].Name
 	})
 
-	var result []byte
-	for _, branch := range sorted {
-		result = append(result, serializeBranch(branch)...)
+	serializedSize := 0
+	for i := range sorted {
+		serializedSize += serializedBranchSize(sorted[i])
 	}
-	return result
+	result := make([]byte, 0, serializedSize)
+	seen := make(map[string]struct{}, len(sorted))
+	for _, branch := range sorted {
+		if branch.Name == "" || strings.ContainsRune(branch.Name, 0) {
+			return nil, fmt.Errorf("invalid branch name %q", branch.Name)
+		}
+		if _, exists := seen[branch.Name]; exists {
+			return nil, fmt.Errorf("duplicate branch name %q", branch.Name)
+		}
+		seen[branch.Name] = struct{}{}
+		var err error
+		result, err = appendSerializedBranch(result, branch)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
-func serializeBranch(branch Branch) []byte {
-	targetIdentifier := computeTargetIdentifier(branch)
-	targetLength := len(targetIdentifier)
+func serializedBranchSize(branch Branch) int {
+	targetTypeLength := len(branch.TargetType)
+	targetLength := len(branch.Target)
+	switch branch.TargetType {
+	case BranchTargetContent, BranchTargetDirectory, BranchTargetRevision, BranchTargetRelease, BranchTargetSnapshot:
+		targetLength = objectHashBytes
+	case BranchTargetDangling:
+		targetLength = 0
+	}
+	return targetTypeLength + 1 + len(branch.Name) + 1 + decimalDigits(targetLength) + 1 + targetLength
+}
 
-	// Format: "<target_type> <name>\0<target_length>:<target_identifier>"
-	var result []byte
+func decimalDigits(value int) int {
+	digits := 1
+	for value >= decimalBase {
+		value /= decimalBase
+		digits++
+	}
+	return digits
+}
+
+func appendSerializedBranch(result []byte, branch Branch) ([]byte, error) {
+	var hashBytes [objectHashBytes]byte
+	targetLength := 0
+	switch branch.TargetType {
+	case BranchTargetContent, BranchTargetDirectory, BranchTargetRevision, BranchTargetRelease, BranchTargetSnapshot:
+		if branch.Target == "" {
+			return nil, fmt.Errorf("missing target hash for branch %q", branch.Name)
+		}
+		var ok bool
+		hashBytes, ok = decodeObjectID(branch.Target)
+		if !ok {
+			return nil, fmt.Errorf("invalid target hash for branch %q", branch.Name)
+		}
+		targetLength = len(hashBytes)
+	case BranchTargetAlias:
+		if branch.Target == "" || strings.ContainsRune(branch.Target, 0) {
+			return nil, fmt.Errorf("invalid alias target for branch %q", branch.Name)
+		}
+		targetLength = len(branch.Target)
+	case BranchTargetDangling:
+		if branch.Target != "" {
+			return nil, fmt.Errorf("dangling branch %q has a target", branch.Name)
+		}
+	default:
+		return nil, fmt.Errorf("invalid target type %q for branch %q", branch.TargetType, branch.Name)
+	}
+
 	result = append(result, []byte(branch.TargetType)...)
 	result = append(result, ' ')
 	result = append(result, []byte(branch.Name)...)
 	result = append(result, 0)
-	result = append(result, []byte(fmt.Sprintf("%d:", targetLength))...)
-	result = append(result, targetIdentifier...)
-
-	return result
-}
-
-func computeTargetIdentifier(branch Branch) []byte {
+	result = strconv.AppendInt(result, int64(targetLength), decimalBase)
+	result = append(result, ':')
 	switch branch.TargetType {
 	case BranchTargetContent, BranchTargetDirectory, BranchTargetRevision, BranchTargetRelease, BranchTargetSnapshot:
-		// Convert hex hash to binary
-		hashBytes, _ := hex.DecodeString(branch.Target)
-		return hashBytes
+		result = append(result, hashBytes[:]...)
 	case BranchTargetAlias:
-		// Alias target is the branch name as bytes
-		return []byte(branch.Target)
-	case BranchTargetDangling:
-		// Dangling has no target
-		return []byte{}
-	default:
-		return []byte{}
+		result = append(result, branch.Target...)
 	}
+	return result, nil
 }

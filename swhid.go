@@ -1,30 +1,37 @@
-// Package swhid provides functionality for computing and parsing Software Heritage Identifiers (SWHIDs).
+// Package swhid computes and parses SoftWare Hash IDentifiers (SWHIDs).
 //
-// SWHIDs are intrinsic identifiers for digital objects (source code files, directories, commits, etc.)
-// based on cryptographic hashes. This package implements the SWHID specification v1.
+// The package targets SWHID specification v1.2. It handles content, directories,
+// revisions, releases, snapshots, and qualified identifiers.
 //
 // Basic usage:
 //
-//	// Compute SWHID for file content
-//	id := swhid.FromContent([]byte("hello world"))
-//	fmt.Println(id) // swh:1:cnt:...
+//	id, err := swhid.FromContent([]byte("hello world"))
 //
-//	// Parse an existing SWHID
-//	id, err := swhid.Parse("swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2")
+//	parsed, err := swhid.Parse("swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2")
 package swhid
 
 import (
 	"errors"
 	"fmt"
 	"net/url"
-	"regexp"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
-	Scheme        = "swh"
-	SchemeVersion = 1
-	ObjectIDLen   = 40
+	Scheme                  = "swh"
+	SchemeVersion           = 1
+	ObjectIDLen             = 40
+	schemeVersionString     = "1"
+	qualifierRangePartCount = 2
+	qualifierOrigin         = "origin"
+	qualifierVisit          = "visit"
+	qualifierAnchor         = "anchor"
+	qualifierPath           = "path"
+	qualifierLines          = "lines"
+	qualifierBytes          = "bytes"
 )
 
 // ObjectType represents the type of object identified by a SWHID.
@@ -46,10 +53,15 @@ var validObjectTypes = map[ObjectType]bool{
 	ObjectTypeSnapshot:  true,
 }
 
-var hashRegex = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // Qualifier keys in canonical order.
-var canonicalQualifierOrder = []string{"origin", "visit", "anchor", "path", "lines", "bytes"}
+var canonicalQualifierOrder = []string{
+	qualifierOrigin,
+	qualifierVisit,
+	qualifierAnchor,
+	qualifierPath,
+	qualifierLines,
+	qualifierBytes,
+}
 
 // Error types
 var (
@@ -59,6 +71,7 @@ var (
 	ErrInvalidVersion    = errors.New("invalid version")
 	ErrInvalidObjectType = errors.New("invalid object type")
 	ErrInvalidObjectHash = errors.New("invalid object hash")
+	ErrInvalidQualifier  = errors.New("invalid qualifier")
 )
 
 // Identifier represents a parsed SWHID.
@@ -70,18 +83,54 @@ type Identifier struct {
 	Qualifiers map[string]string
 }
 
+// MarshalText returns the canonical string form of a valid Identifier.
+func (id *Identifier) MarshalText() ([]byte, error) {
+	if id == nil {
+		return nil, ErrEmptySWHID
+	}
+	if id.Scheme != Scheme {
+		return nil, fmt.Errorf("%w: %s", ErrInvalidScheme, id.Scheme)
+	}
+	if id.Version != SchemeVersion {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidVersion, id.Version)
+	}
+	validated, err := NewIdentifier(id.ObjectType, id.ObjectHash, id.Qualifiers)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(validated.String()), nil
+}
+
+// UnmarshalText parses a SWHID into id.
+func (id *Identifier) UnmarshalText(text []byte) error {
+	if id == nil {
+		return errors.New("cannot unmarshal SWHID into nil Identifier")
+	}
+	parsed, err := Parse(string(text))
+	if err != nil {
+		return err
+	}
+	*id = *parsed
+	return nil
+}
+
 // NewIdentifier creates a new Identifier with validation.
 func NewIdentifier(objectType ObjectType, objectHash string, qualifiers map[string]string) (*Identifier, error) {
+	return newIdentifier(objectType, objectHash, qualifiers, true)
+}
+
+func newIdentifier(objectType ObjectType, objectHash string, qualifiers map[string]string, copyQualifiers bool) (*Identifier, error) {
 	if !validObjectTypes[objectType] {
 		return nil, fmt.Errorf("%w: %s", ErrInvalidObjectType, objectType)
 	}
 
-	if !hashRegex.MatchString(objectHash) {
+	if !validObjectHash(objectHash) {
 		return nil, fmt.Errorf("%w: must be %d hex digits", ErrInvalidObjectHash, ObjectIDLen)
 	}
 
-	if qualifiers == nil {
-		qualifiers = make(map[string]string)
+	qualifiers, err := validateQualifiers(objectType, qualifiers, copyQualifiers)
+	if err != nil {
+		return nil, err
 	}
 
 	return &Identifier{
@@ -98,61 +147,88 @@ func Parse(swhidString string) (*Identifier, error) {
 	if swhidString == "" {
 		return nil, ErrEmptySWHID
 	}
-
-	// Split core part from qualifiers
-	parts := strings.Split(swhidString, ";")
-	corePart := parts[0]
-	qualifierParts := parts[1:]
-
-	// Parse core part
-	coreParts := strings.Split(corePart, ":")
-	if len(coreParts) != 4 {
-		return nil, ErrInvalidFormat
+	if strings.IndexFunc(swhidString, unicode.IsSpace) >= 0 {
+		return nil, fmt.Errorf("%w: whitespace is not allowed", ErrInvalidFormat)
 	}
 
-	scheme := coreParts[0]
-	versionStr := coreParts[1]
-	objectType := ObjectType(coreParts[2])
-	objectHash := coreParts[3]
-
-	if scheme != Scheme {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidScheme, scheme)
+	corePart, qualifierString, hasQualifiers := strings.Cut(swhidString, ";")
+	objectType, objectHash, err := parseCoreIdentifier(corePart)
+	if err != nil {
+		return nil, err
 	}
 
-	if versionStr != "1" {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidVersion, versionStr)
-	}
-
-	if !validObjectTypes[objectType] {
-		return nil, fmt.Errorf("%w: %s", ErrInvalidObjectType, objectType)
-	}
-
-	if !hashRegex.MatchString(objectHash) {
-		return nil, fmt.Errorf("%w: must be %d hex digits", ErrInvalidObjectHash, ObjectIDLen)
-	}
-
-	// Parse qualifiers
-	qualifiers := make(map[string]string)
-	for _, part := range qualifierParts {
+	qualifiers := make(map[string]string, len(canonicalQualifierOrder))
+	for hasQualifiers {
+		part := qualifierString
+		if nextPart, remaining, found := strings.Cut(qualifierString, ";"); found {
+			part = nextPart
+			qualifierString = remaining
+		} else {
+			hasQualifiers = false
+		}
 		if part == "" {
-			continue
+			return nil, fmt.Errorf("%w: empty qualifier", ErrInvalidQualifier)
 		}
 		idx := strings.Index(part, "=")
 		if idx == -1 {
-			continue
+			return nil, fmt.Errorf("%w: %s", ErrInvalidQualifier, part)
 		}
 		key := part[:idx]
-		value := part[idx+1:]
-		qualifiers[key] = decodeQualifierValue(value)
+		if key == "" {
+			return nil, fmt.Errorf("%w: empty key", ErrInvalidQualifier)
+		}
+		if _, exists := qualifiers[key]; exists {
+			return nil, fmt.Errorf("%w: duplicate %s", ErrInvalidQualifier, key)
+		}
+		value, err := decodeQualifierValue(part[idx+1:])
+		if err != nil {
+			return nil, fmt.Errorf("%w %s: %v", ErrInvalidQualifier, key, err)
+		}
+		qualifiers[key] = value
 	}
 
-	return &Identifier{
-		Scheme:     Scheme,
-		Version:    SchemeVersion,
-		ObjectType: objectType,
-		ObjectHash: objectHash,
-		Qualifiers: qualifiers,
-	}, nil
+	return newIdentifier(objectType, objectHash, qualifiers, false)
+}
+
+func parseCoreIdentifier(value string) (ObjectType, string, error) {
+	scheme, rest, ok := strings.Cut(value, ":")
+	if !ok {
+		return "", "", ErrInvalidFormat
+	}
+	version, rest, ok := strings.Cut(rest, ":")
+	if !ok {
+		return "", "", ErrInvalidFormat
+	}
+	objectTypeValue, objectHash, ok := strings.Cut(rest, ":")
+	if !ok || strings.ContainsRune(objectHash, ':') {
+		return "", "", ErrInvalidFormat
+	}
+	if scheme != Scheme {
+		return "", "", fmt.Errorf("%w: %s", ErrInvalidScheme, scheme)
+	}
+	if version != schemeVersionString {
+		return "", "", fmt.Errorf("%w: %s", ErrInvalidVersion, version)
+	}
+	objectType := ObjectType(objectTypeValue)
+	if !validObjectTypes[objectType] {
+		return "", "", fmt.Errorf("%w: %s", ErrInvalidObjectType, objectType)
+	}
+	if !validObjectHash(objectHash) {
+		return "", "", fmt.Errorf("%w: must be %d hex digits", ErrInvalidObjectHash, ObjectIDLen)
+	}
+	return objectType, objectHash, nil
+}
+
+func validObjectHash(value string) bool {
+	if len(value) != ObjectIDLen {
+		return false
+	}
+	for i := range value {
+		if value[i] < '0' || (value[i] > '9' && (value[i] < 'a' || value[i] > 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // String returns the canonical SWHID string representation.
@@ -190,56 +266,157 @@ func (id *Identifier) Equal(other *Identifier) bool {
 	return true
 }
 
-// WithQualifiers returns a new Identifier with the given qualifiers.
-func (id *Identifier) WithQualifiers(qualifiers map[string]string) *Identifier {
-	return &Identifier{
-		Scheme:     id.Scheme,
-		Version:    id.Version,
-		ObjectType: id.ObjectType,
-		ObjectHash: id.ObjectHash,
-		Qualifiers: qualifiers,
-	}
+// WithQualifiers returns a new validated Identifier with the given qualifiers.
+func (id *Identifier) WithQualifiers(qualifiers map[string]string) (*Identifier, error) {
+	return NewIdentifier(id.ObjectType, id.ObjectHash, qualifiers)
 }
 
 func formatQualifiers(quals map[string]string) string {
 	var parts []string
 
-	// Add qualifiers in canonical order first
 	for _, key := range canonicalQualifierOrder {
 		if value, ok := quals[key]; ok {
-			parts = append(parts, key+"="+encodeQualifierValue(value))
-		}
-	}
-
-	// Add remaining qualifiers
-	for key, value := range quals {
-		isCanonical := false
-		for _, ck := range canonicalQualifierOrder {
-			if key == ck {
-				isCanonical = true
-				break
-			}
-		}
-		if !isCanonical {
-			parts = append(parts, key+"="+encodeQualifierValue(value))
+			parts = append(parts, key+"="+encodeQualifierValue(key, value))
 		}
 	}
 
 	return strings.Join(parts, ";")
 }
 
-func encodeQualifierValue(value string) string {
-	// Encode semicolons and percent signs
-	value = strings.ReplaceAll(value, "%", "%25")
-	value = strings.ReplaceAll(value, ";", "%3B")
-	return value
-}
-
-func decodeQualifierValue(value string) string {
-	// Decode URL-encoded values
-	decoded, err := url.QueryUnescape(value)
-	if err != nil {
+func encodeQualifierValue(key, value string) string {
+	const hexDigits = "0123456789ABCDEF"
+	needsEscaping := false
+	for _, r := range value {
+		if qualifierRuneNeedsEscaping(key, r) {
+			needsEscaping = true
+			break
+		}
+	}
+	if !needsEscaping {
 		return value
 	}
-	return decoded
+	var encoded strings.Builder
+	encoded.Grow(len(value))
+	for len(value) > 0 {
+		r, size := utf8.DecodeRuneInString(value)
+		part := value[:size]
+		if qualifierRuneNeedsEscaping(key, r) {
+			for _, b := range []byte(part) {
+				_ = encoded.WriteByte('%')
+				_ = encoded.WriteByte(hexDigits[b>>4])
+				_ = encoded.WriteByte(hexDigits[b&0x0f])
+			}
+		} else {
+			_, _ = encoded.WriteString(part)
+		}
+		value = value[size:]
+	}
+	return encoded.String()
+}
+
+func qualifierRuneNeedsEscaping(key string, value rune) bool {
+	return value == '%' || value == ';' || unicode.IsSpace(value) || key == qualifierPath && (value == '?' || value == '#')
+}
+
+func decodeQualifierValue(value string) (string, error) {
+	return url.PathUnescape(value)
+}
+
+func validateQualifiers(objectType ObjectType, qualifiers map[string]string, copyInput bool) (map[string]string, error) {
+	validated := qualifiers
+	if copyInput || validated == nil {
+		validated = make(map[string]string, len(qualifiers))
+	}
+	for key, value := range qualifiers {
+		if !knownQualifier(key) {
+			return nil, fmt.Errorf("%w: %q", ErrInvalidQualifier, key)
+		}
+		if !utf8.ValidString(value) || strings.IndexFunc(value, unicode.IsControl) >= 0 {
+			return nil, fmt.Errorf("%w %s: value contains invalid characters", ErrInvalidQualifier, key)
+		}
+		if err := validateQualifier(key, value); err != nil {
+			return nil, fmt.Errorf("%w %s: %v", ErrInvalidQualifier, key, err)
+		}
+		if copyInput {
+			validated[key] = value
+		}
+	}
+
+	_, hasLines := validated[qualifierLines]
+	_, hasBytes := validated[qualifierBytes]
+	_, hasPath := validated[qualifierPath]
+	if hasLines && hasBytes {
+		return nil, fmt.Errorf("%w: lines and bytes cannot be combined", ErrInvalidQualifier)
+	}
+	if objectType != ObjectTypeContent && (hasLines || hasBytes) {
+		return nil, fmt.Errorf("%w: fragment qualifiers require content", ErrInvalidQualifier)
+	}
+	if objectType != ObjectTypeContent && objectType != ObjectTypeDirectory && hasPath {
+		return nil, fmt.Errorf("%w: path requires content or directory", ErrInvalidQualifier)
+	}
+	return validated, nil
+}
+
+func validateQualifier(key, value string) error {
+	switch key {
+	case qualifierOrigin:
+		parsed, err := url.ParseRequestURI(encodeQualifierValue(key, value))
+		if err != nil || parsed.Scheme == "" {
+			return errors.New("origin must be an absolute URI")
+		}
+	case qualifierVisit:
+		return validateCoreQualifier(value, ObjectTypeSnapshot)
+	case qualifierAnchor:
+		objectType, _, err := parseCoreIdentifier(value)
+		if err != nil {
+			return errors.New("anchor must be a core SWHID")
+		}
+		if objectType == ObjectTypeContent {
+			return errors.New("anchor cannot identify content")
+		}
+	case qualifierPath:
+		if !strings.HasPrefix(value, "/") {
+			return errors.New("path must be absolute")
+		}
+	case qualifierLines:
+		return validateRange(value, 1)
+	case qualifierBytes:
+		return validateRange(value, 0)
+	}
+	return nil
+}
+
+func knownQualifier(key string) bool {
+	for _, known := range canonicalQualifierOrder {
+		if key == known {
+			return true
+		}
+	}
+	return false
+}
+
+func validateCoreQualifier(value string, objectType ObjectType) error {
+	parsedType, _, err := parseCoreIdentifier(value)
+	if err != nil || parsedType != objectType {
+		return fmt.Errorf("must be a core %s SWHID", objectType)
+	}
+	return nil
+}
+
+func validateRange(value string, minimum uint64) error {
+	parts := strings.Split(value, "-")
+	if len(parts) > qualifierRangePartCount || len(parts) == 0 {
+		return errors.New("invalid range")
+	}
+	start, err := strconv.ParseUint(parts[0], 10, 64)
+	if err != nil || start < minimum {
+		return errors.New("invalid range start")
+	}
+	if len(parts) == qualifierRangePartCount {
+		end, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil || end < start {
+			return errors.New("invalid range end")
+		}
+	}
+	return nil
 }

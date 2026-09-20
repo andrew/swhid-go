@@ -1,17 +1,20 @@
 package objects
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
-	"fmt"
+	"bytes"
+	"io"
 )
 
 // ComputeContentHash computes the Git blob hash for file content.
 // The hash is computed using Git's blob format: "blob <size>\0<content>"
-func ComputeContentHash(data []byte) string {
-	header := fmt.Sprintf("blob %d\x00", len(data))
-	h := sha1.New()
-	h.Write([]byte(header))
-	h.Write(data)
-	return hex.EncodeToString(h.Sum(nil))
+func ComputeContentHash(data []byte) (string, error) {
+	return ComputeContentHashReader(bytes.NewReader(data), int64(len(data)))
+}
+
+// ComputeContentHashReader computes a content hash without loading the content into memory.
+func ComputeContentHashReader(content io.Reader, size int64) (string, error) {
+	if size < 0 {
+		return "", io.ErrUnexpectedEOF
+	}
+	return computeObjectHash("blob", size, content)
 }
