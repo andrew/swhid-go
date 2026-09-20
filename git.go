@@ -72,12 +72,18 @@ func FromSnapshot(repoPath string) (*Identifier, error) {
 	if err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
 		return nil, fmt.Errorf("failed to get HEAD: %w", err)
 	}
-	if err == nil && head.Type() == plumbing.SymbolicReference {
-		branches = append(branches, objects.Branch{
-			Name:       "HEAD",
-			TargetType: objects.BranchTargetAlias,
-			Target:     head.Target().String(),
-		})
+	if err == nil {
+		branch := objects.Branch{Name: "HEAD"}
+		if head.Type() == plumbing.SymbolicReference {
+			branch.TargetType = objects.BranchTargetAlias
+			branch.Target = head.Target().String()
+		} else {
+			branch.TargetType, branch.Target, err = resolveRefTarget(repo, head.Hash())
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve HEAD: %w", err)
+			}
+		}
+		branches = append(branches, branch)
 	}
 
 	refs, err := repo.References()

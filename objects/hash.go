@@ -51,6 +51,9 @@ func VerifyObjectHash(objectType string, size int64, content io.Reader, expected
 }
 
 func validateObjectID(field, value string) error {
+	if value != strings.ToLower(value) {
+		return fmt.Errorf("invalid %s hash", field)
+	}
 	decoded, err := hex.DecodeString(value)
 	if err != nil || len(decoded) != 20 {
 		return fmt.Errorf("invalid %s hash", field)

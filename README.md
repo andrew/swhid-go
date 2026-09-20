@@ -150,7 +150,7 @@ Use `jsonl` when a caller collects records from several invocations into one str
 - Symlinks hash their link target and are not followed.
 - Git index modes determine executable files when an index is available.
 - Gitlinks use mode `160000` and the revision stored in the index.
-- The repository root's `.git` entry is excluded. An ordinary `.git` entry elsewhere is included.
+- `.git` entries are excluded at every directory depth.
 - Sockets, devices, FIFOs, and other special files return an error.
 
 ## References

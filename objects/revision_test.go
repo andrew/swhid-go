@@ -1,6 +1,7 @@
 package objects
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -141,6 +142,7 @@ func TestRevisionPresentEmptyMessage(t *testing.T) {
 func TestRevisionRejectsInvalidMetadata(t *testing.T) {
 	tests := []RevisionMetadata{
 		{Directory: invalidObjectHash, Author: testIdentity, Committer: testIdentity},
+		{Directory: strings.ToUpper(emptyTreeHash), Author: testIdentity, Committer: testIdentity},
 		{Directory: emptyTreeHash, Author: testIdentity, Committer: testIdentity, ExtraHeaders: [][2]string{{"bad key", "value"}}},
 	}
 

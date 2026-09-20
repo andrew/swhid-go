@@ -85,6 +85,33 @@ func TestFromSnapshotUsesBranchesTagsAndSingleHEAD(t *testing.T) {
 	}
 }
 
+func TestFromSnapshotIncludesDetachedHEAD(t *testing.T) {
+	repoPath, repo, mainHash := repositoryWithEmptyCommit(t)
+	payload := "tree " + emptyTreeHash + "\n" +
+		"parent " + mainHash.String() + "\n" +
+		"author Test <test@example.com> 1000000001 +0000\n" +
+		"committer Test <test@example.com> 1000000001 +0000\n\n"
+	detachedHash := storeObject(t, repo, plumbing.CommitObject, payload)
+	if err := repo.Storer.SetReference(plumbing.NewHashReference(plumbing.HEAD, detachedHash)); err != nil {
+		t.Fatalf("SetReference() error = %v", err)
+	}
+
+	got, err := FromSnapshot(repoPath)
+	if err != nil {
+		t.Fatalf("FromSnapshot() error = %v", err)
+	}
+	want, err := FromSnapshotBranches([]objects.Branch{
+		{Name: "HEAD", TargetType: objects.BranchTargetRevision, Target: detachedHash.String()},
+		{Name: mainBranchRef, TargetType: objects.BranchTargetRevision, Target: mainHash.String()},
+	})
+	if err != nil {
+		t.Fatalf("FromSnapshotBranches() error = %v", err)
+	}
+	if got.ObjectHash != want.ObjectHash {
+		t.Errorf("FromSnapshot() hash = %s, want %s", got.ObjectHash, want.ObjectHash)
+	}
+}
+
 func TestFromSnapshotIncludesDanglingBranch(t *testing.T) {
 	repoPath, repo, commitHash := repositoryWithEmptyCommit(t)
 	missingHash := plumbing.NewHash("1111111111111111111111111111111111111111")
