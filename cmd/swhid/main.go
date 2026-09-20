@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -25,6 +26,11 @@ const (
 	formatJSON       = "json"
 	formatJSONL      = "jsonl"
 	supportedFormats = "text, raw, json, jsonl"
+)
+
+var (
+	version       = "devel"
+	readBuildInfo = debug.ReadBuildInfo
 )
 
 type commandOptions struct {
@@ -84,6 +90,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		showHelp(stdout)
 		return exitSuccess
 	}
+	if args[0] == "version" || args[0] == "-version" || args[0] == "--version" {
+		_, _ = fmt.Fprintf(stdout, "swhid %s\n", reportedVersion())
+		return exitSuccess
+	}
 
 	command := args[0]
 	options := commandOptions{qualifiers: make(qualifierList)}
@@ -140,6 +150,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return exitCommandError
 	}
 	return exitSuccess
+}
+
+func reportedVersion() string {
+	if version != "devel" {
+		return version
+	}
+	info, ok := readBuildInfo()
+	if !ok || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return version
+	}
+	return info.Main.Version
 }
 
 func validFormat(format string) bool {
@@ -380,11 +401,13 @@ Usage:
   swhid revision [options] <repo> [ref]     Generate SWHID for a Git revision
   swhid release [options] <repo> <tag>      Generate SWHID for a Git release
   swhid snapshot [options] <repo>           Generate SWHID for a Git snapshot
+  swhid version                             Show the swhid version
 
 Options:
   -f, --format FORMAT              Output format (text, raw, json, jsonl)
   -q, --qualifier KEY=VALUE        Add qualifier to a generated SWHID
   -h, --help                       Show command help
+      --version                    Show the swhid version
 
 Examples:
   swhid parse swh:1:cnt:94a9ed024d3859793618152ea559a168bbcbb5e2

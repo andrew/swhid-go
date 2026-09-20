@@ -89,6 +89,7 @@ swhid directory [options] <path>
 swhid revision [options] <repo> [ref]
 swhid release [options] <repo> <tag>
 swhid snapshot [options] <repo>
+swhid version
 ```
 
 Content is read from standard input. Release identifiers require annotated Git tags. Snapshot identifiers include local branches, tags, and one symbolic `HEAD`; remote-tracking references are excluded.
@@ -99,6 +100,7 @@ swhid directory /path/to/tree --format json
 swhid revision /path/to/repo HEAD --format raw
 swhid release /path/to/repo v1.0.0 --format jsonl
 swhid snapshot /path/to/repo --qualifier origin=https://example.com/repo.git
+swhid --version
 ```
 
 Options may appear before or after positional arguments. The output formats are:
@@ -109,6 +111,8 @@ Options may appear before or after positional arguments. The output formats are:
 - `jsonl`: the same object on one line. Each invocation emits one record.
 
 Exit status `0` means success. Status `1` reports invalid input, hashing failures, or filesystem and Git errors. Status `2` reports command-line usage errors. Machine output goes to standard output and diagnostics go to standard error.
+
+Tagged releases provide `swhid` archives for Linux, macOS, and Windows on amd64 and arm64. Release checksums are signed with Sigstore and published with the archives.
 
 ## Ruby subprocess use
 

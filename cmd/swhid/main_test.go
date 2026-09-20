@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -131,6 +132,56 @@ func TestRunDoesNotRetainOptions(t *testing.T) {
 	}
 	if strings.Contains(secondOutput.String(), "origin=") {
 		t.Fatalf("second run retained the first run's qualifier: %s", secondOutput.String())
+	}
+}
+
+func TestRunVersion(t *testing.T) {
+	previousVersion := version
+	version = "1.2.3"
+	t.Cleanup(func() { version = previousVersion })
+
+	for _, args := range [][]string{{"version"}, {"--version"}} {
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+
+		status := run(args, strings.NewReader(""), &stdout, &stderr)
+
+		if status != exitSuccess {
+			t.Fatalf("run(%q) returned %d, stderr: %s", args, status, stderr.String())
+		}
+		if got, want := stdout.String(), "swhid 1.2.3\n"; got != want {
+			t.Errorf("run(%q) output = %q, want %q", args, got, want)
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("run(%q) stderr = %q", args, stderr.String())
+		}
+	}
+}
+
+func TestRunVersionUsesModuleVersion(t *testing.T) {
+	previousVersion := version
+	previousReadBuildInfo := readBuildInfo
+	version = "devel"
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Main: debug.Module{Version: "v0.1.0"}}, true
+	}
+	t.Cleanup(func() {
+		version = previousVersion
+		readBuildInfo = previousReadBuildInfo
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	status := run([]string{"--version"}, strings.NewReader(""), &stdout, &stderr)
+
+	if status != exitSuccess {
+		t.Fatalf("run() returned %d, stderr: %s", status, stderr.String())
+	}
+	if got, want := stdout.String(), "swhid v0.1.0\n"; got != want {
+		t.Errorf("run() output = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("run() stderr = %q", stderr.String())
 	}
 }
 
