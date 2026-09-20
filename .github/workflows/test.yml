@@ -11,9 +11,6 @@ permissions:
 
 jobs:
   test:
-    permissions:
-      contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -26,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
 
       - name: Install dependencies
@@ -42,14 +39,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: go test -coverprofile=coverage.out ./...
 
-      - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest'
-        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        with:
-          files: coverage.out
-          fail_ci_if_error: true
-          use_oidc: true
-
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -58,7 +47,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
 
       - name: Run go vet

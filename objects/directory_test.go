@@ -125,6 +125,24 @@ func TestDirectoryEntrySorting(t *testing.T) {
 	}
 }
 
+func TestComputeDirectoryHashPreservesExplicitPermissions(t *testing.T) {
+	entries := []DirectoryEntry{{
+		Name:   "file",
+		Type:   EntryTypeFile,
+		Target: emptyBlobHash,
+		Perms:  "100664",
+	}}
+
+	hash, err := ComputeDirectoryHash(entries)
+	if err != nil {
+		t.Fatalf("ComputeDirectoryHash() error = %v", err)
+	}
+	const want = "df143af729209e32ee1bcfb027177885e78eac09"
+	if hash != want {
+		t.Errorf("ComputeDirectoryHash() = %s, want %s", hash, want)
+	}
+}
+
 func TestComputeDirectoryHashRejectsInvalidEntries(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -133,8 +151,6 @@ func TestComputeDirectoryHashRejectsInvalidEntries(t *testing.T) {
 		{name: "duplicate name", entries: []DirectoryEntry{{Name: testEntryName, Target: emptyBlobHash}, {Name: testEntryName, Target: emptyBlobHash}}},
 		{name: "slash in name", entries: []DirectoryEntry{{Name: "dir/file", Target: emptyBlobHash}}},
 		{name: "invalid target", entries: []DirectoryEntry{{Name: testEntryName, Target: invalidObjectHash}}},
-		{name: "invalid permissions", entries: []DirectoryEntry{{Name: testEntryName, Target: emptyBlobHash, Perms: "100777"}}},
-		{name: "permissions mismatch", entries: []DirectoryEntry{{Name: testEntryName, Type: EntryTypeDirectory, Target: emptyTreeHash, Perms: "100644"}}},
 		{name: "invalid type", entries: []DirectoryEntry{{Name: testEntryName, Type: EntryType(99), Target: emptyBlobHash}}},
 	}
 

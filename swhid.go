@@ -312,17 +312,6 @@ func validateQualifiers(objectType ObjectType, qualifiers map[string]string) (ma
 	if objectType != ObjectTypeContent && objectType != ObjectTypeDirectory && hasPath {
 		return nil, fmt.Errorf("%w: path requires content or directory", ErrInvalidQualifier)
 	}
-	if _, ok := validated[qualifierVisit]; ok {
-		if _, hasOrigin := validated[qualifierOrigin]; !hasOrigin {
-			return nil, fmt.Errorf("%w: visit requires origin", ErrInvalidQualifier)
-		}
-	}
-	if _, ok := validated[qualifierAnchor]; ok {
-		if !hasPath {
-			return nil, fmt.Errorf("%w: anchor requires path", ErrInvalidQualifier)
-		}
-	}
-
 	return validated, nil
 }
 

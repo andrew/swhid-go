@@ -64,10 +64,6 @@ func serializeBranches(branches []Branch) ([]byte, error) {
 }
 
 func serializeBranch(branch Branch) ([]byte, error) {
-	targetType := branch.TargetType
-	if targetType == BranchTargetDangling {
-		targetType = BranchTargetRevision
-	}
 	targetIdentifier, err := computeTargetIdentifier(branch)
 	if err != nil {
 		return nil, err
@@ -75,7 +71,7 @@ func serializeBranch(branch Branch) ([]byte, error) {
 	targetLength := len(targetIdentifier)
 
 	var result []byte
-	result = append(result, []byte(targetType)...)
+	result = append(result, []byte(branch.TargetType)...)
 	result = append(result, ' ')
 	result = append(result, []byte(branch.Name)...)
 	result = append(result, 0)

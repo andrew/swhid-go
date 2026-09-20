@@ -44,7 +44,6 @@ func TestSnapshotWithBranches(t *testing.T) {
 		t.Fatalf("ComputeSnapshotHash() error = %v", err)
 	}
 
-	// Just verify it produces a 40-char hex hash
 	if len(hash) != 40 {
 		t.Errorf("ComputeSnapshotHash() hash length = %d, want 40", len(hash))
 	}
@@ -95,7 +94,6 @@ func TestSnapshotWithAlias(t *testing.T) {
 		t.Fatalf("ComputeSnapshotHash() error = %v", err)
 	}
 
-	// Just verify it produces a 40-char hex hash
 	if len(hash) != 40 {
 		t.Errorf("ComputeSnapshotHash() hash length = %d, want 40", len(hash))
 	}
@@ -115,9 +113,9 @@ func TestSnapshotWithDangling(t *testing.T) {
 		t.Fatalf("ComputeSnapshotHash() error = %v", err)
 	}
 
-	// Just verify it produces a 40-char hex hash
-	if len(hash) != 40 {
-		t.Errorf("ComputeSnapshotHash() hash length = %d, want 40", len(hash))
+	const want = "4643cc976f3c35dba499513ec8dd2724000719d7"
+	if hash != want {
+		t.Errorf("ComputeSnapshotHash() = %s, want %s", hash, want)
 	}
 }
 

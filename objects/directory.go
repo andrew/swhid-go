@@ -95,9 +95,6 @@ func serializeEntries(entries []DirectoryEntry) ([]byte, error) {
 		seen[entry.Name] = struct{}{}
 
 		perms := entry.Permissions()
-		if perms != entry.DefaultPerms() {
-			return nil, fmt.Errorf("permissions %q do not match entry type for %q", perms, entry.Name)
-		}
 		result = append(result, []byte(perms)...)
 		result = append(result, ' ')
 		result = append(result, []byte(entry.Name)...)

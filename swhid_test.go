@@ -300,6 +300,25 @@ func TestQualifierRoundTripPreservesLiteralPlus(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsStandaloneContextQualifiers(t *testing.T) {
+	tests := []string{
+		testContentCore + ";visit=swh:1:snp:c7c108084bc0bf3d81436bf980b46e98bd338453",
+		testDirectoryCore + ";anchor=swh:1:rev:309cf2674ee7a0749978cf8265ab91a60aea0f7d",
+	}
+
+	for _, input := range tests {
+		t.Run(input, func(t *testing.T) {
+			id, err := Parse(input)
+			if err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if got := id.String(); got != input {
+				t.Errorf("String() = %q, want %q", got, input)
+			}
+		})
+	}
+}
+
 func TestQualifierRoundTripEscapesReservedValues(t *testing.T) {
 	id, err := NewIdentifier(ObjectTypeContent, testContentHash, map[string]string{
 		"origin":      "https://example.com/a b;100%",

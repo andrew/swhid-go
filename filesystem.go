@@ -125,11 +125,11 @@ func buildEntries(dirPath, repoRoot string, permissions map[string]os.FileMode, 
 	entries := make([]objects.DirectoryEntry, 0, len(dirEntries))
 	for _, de := range dirEntries {
 		name := de.Name()
-		fullPath := filepath.Join(dirPath, name)
-		relPath := relativePathInRepo(fullPath, repoRoot)
-		if relPath == ".git" {
+		if name == ".git" {
 			continue
 		}
+		fullPath := filepath.Join(dirPath, name)
+		relPath := relativePathInRepo(fullPath, repoRoot)
 
 		indexEntry, tracked := indexEntries[relPath]
 		if tracked && indexEntry.mode == filemode.Submodule {

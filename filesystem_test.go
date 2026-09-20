@@ -108,17 +108,20 @@ func TestFromDirectoryPathFile(t *testing.T) {
 	}
 }
 
-func TestFromDirectoryPathIncludesOrdinaryDotGitEntry(t *testing.T) {
+func TestFromDirectoryPathSkipsDotGitEntries(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("ordinary file"), 0644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-
-	contentID, err := FromContent([]byte("ordinary file"))
-	if err != nil {
-		t.Fatalf("FromContent() error = %v", err)
+	nested := filepath.Join(dir, "nested")
+	if err := os.MkdirAll(filepath.Join(nested, ".git"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	want, err := FromDirectory([]objects.DirectoryEntry{{Name: ".git", Type: objects.EntryTypeFile, Target: contentID.ObjectHash}})
+	if err := os.WriteFile(filepath.Join(nested, ".git", "ignored"), []byte("ignored"), 0644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	want, err := FromDirectory([]objects.DirectoryEntry{{Name: "nested", Type: objects.EntryTypeDirectory, Target: emptyTreeHash}})
 	if err != nil {
 		t.Fatalf("FromDirectory() error = %v", err)
 	}
