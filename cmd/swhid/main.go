@@ -123,7 +123,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	case "parse":
 		err = runParse(fs.Args(), options, stdout)
 	case "content":
-		err = runContent(stdin, options, stdout)
+		err = runContent(fs.Args(), stdin, options, stdout)
 	case "directory":
 		err = runDirectory(fs.Args(), options, stdout)
 	case "revision":
@@ -217,7 +217,11 @@ func runParse(args []string, options commandOptions, output io.Writer) error {
 	return outputIdentifier(output, id, options.format)
 }
 
-func runContent(input io.Reader, options commandOptions, output io.Writer) error {
+func runContent(args []string, input io.Reader, options commandOptions, output io.Writer) error {
+	if len(args) != 0 {
+		return newUsageError("content reads from stdin and does not accept positional arguments")
+	}
+
 	id, err := contentIdentifier(input)
 	if err != nil {
 		return err

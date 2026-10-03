@@ -33,6 +33,40 @@ func TestRunContentText(t *testing.T) {
 	}
 }
 
+func TestRunContentRejectsPositionalArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "plain argument", args: []string{contentCommand, "file.txt"}},
+		{name: "argument before option", args: []string{contentCommand, "file.txt", longFormatFlag, formatRaw}},
+		{name: "argument after terminator", args: []string{contentCommand, "--", "file.txt"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			stdin := strings.NewReader("payload")
+
+			status := run(test.args, stdin, &stdout, &stderr)
+
+			if status != exitUsageError {
+				t.Fatalf("run returned %d, want %d; stderr: %s", status, exitUsageError, stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("unexpected stdout: %q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "does not accept positional arguments") {
+				t.Fatalf("unexpected stderr: %s", stderr.String())
+			}
+			if got := stdin.Len(); got != len("payload") {
+				t.Fatalf("stdin consumed %d bytes, want it left untouched", len("payload")-got)
+			}
+		})
+	}
+}
+
 func TestRunContentJSONWithQualifier(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
