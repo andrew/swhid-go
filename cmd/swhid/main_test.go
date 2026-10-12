@@ -34,13 +34,14 @@ func TestRunContentText(t *testing.T) {
 }
 
 func TestRunContentRejectsPositionalArguments(t *testing.T) {
+	const filename = "file.txt"
 	tests := []struct {
 		name string
 		args []string
 	}{
-		{name: "plain argument", args: []string{contentCommand, "file.txt"}},
-		{name: "argument before option", args: []string{contentCommand, "file.txt", longFormatFlag, formatRaw}},
-		{name: "argument after terminator", args: []string{contentCommand, "--", "file.txt"}},
+		{name: "plain argument", args: []string{contentCommand, filename}},
+		{name: "argument before option", args: []string{contentCommand, filename, longFormatFlag, formatRaw}},
+		{name: "argument after terminator", args: []string{contentCommand, "--", filename}},
 	}
 
 	for _, test := range tests {
