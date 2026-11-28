@@ -14,6 +14,10 @@ const (
 	testOriginURL     = "https://example.com"
 )
 
+const testRevisionCore = "swh:1:rev:309cf2674ee7a0749978cf8265ab91a60aea0f7d"
+
+const testSnapshotCore = "swh:1:snp:c7c108084bc0bf3d81436bf980b46e98bd338453"
+
 func TestParse(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -37,7 +41,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:     "valid revision SWHID",
-			input:    "swh:1:rev:309cf2674ee7a0749978cf8265ab91a60aea0f7d",
+			input:    testRevisionCore,
 			wantType: ObjectTypeRevision,
 			wantHash: "309cf2674ee7a0749978cf8265ab91a60aea0f7d",
 		},
@@ -49,7 +53,7 @@ func TestParse(t *testing.T) {
 		},
 		{
 			name:     "valid snapshot SWHID",
-			input:    "swh:1:snp:c7c108084bc0bf3d81436bf980b46e98bd338453",
+			input:    testSnapshotCore,
 			wantType: ObjectTypeSnapshot,
 			wantHash: "c7c108084bc0bf3d81436bf980b46e98bd338453",
 		},
@@ -268,9 +272,9 @@ func TestRoundTrip(t *testing.T) {
 	tests := []string{
 		testContentCore,
 		testDirectoryCore,
-		"swh:1:rev:309cf2674ee7a0749978cf8265ab91a60aea0f7d",
+		testRevisionCore,
 		"swh:1:rel:22ece559cc7cc2364edc5e5593d63ae8bd229f9f",
-		"swh:1:snp:c7c108084bc0bf3d81436bf980b46e98bd338453",
+		testSnapshotCore,
 	}
 
 	for _, swhidStr := range tests {
@@ -300,22 +304,33 @@ func TestQualifierRoundTripPreservesLiteralPlus(t *testing.T) {
 	}
 }
 
-func TestParseAcceptsStandaloneContextQualifiers(t *testing.T) {
-	tests := []string{
-		testContentCore + ";visit=swh:1:snp:c7c108084bc0bf3d81436bf980b46e98bd338453",
-		testDirectoryCore + ";anchor=swh:1:rev:309cf2674ee7a0749978cf8265ab91a60aea0f7d",
+func TestParseIgnoresInapplicableQualifiers(t *testing.T) {
+	tests := []struct{ core, suffix string }{
+		{testContentCore, ";visit=" + testSnapshotCore},
+		{testDirectoryCore, ";anchor=" + testRevisionCore},
+		{testDirectoryCore, ";lines=1;bytes=0"},
+		{testRevisionCore, ";path=/file"},
+		{testRevisionCore, ";anchor=" + testRevisionCore + ";path=/file"},
 	}
+	for _, test := range tests {
+		id, err := Parse(test.core + test.suffix)
+		if err != nil {
+			t.Fatalf("Parse(%q) error = %v", test.suffix, err)
+		}
+		if got := id.String(); got != test.core {
+			t.Errorf("String() = %q, want %q", got, test.core)
+		}
+	}
+}
 
-	for _, input := range tests {
-		t.Run(input, func(t *testing.T) {
-			id, err := Parse(input)
-			if err != nil {
-				t.Fatalf("Parse() error = %v", err)
-			}
-			if got := id.String(); got != input {
-				t.Errorf("String() = %q, want %q", got, input)
-			}
-		})
+func TestNewIdentifierRejectsStandaloneContextQualifiers(t *testing.T) {
+	for key, value := range map[string]string{
+		qualifierVisit:  testSnapshotCore,
+		qualifierAnchor: testRevisionCore,
+	} {
+		if _, err := NewIdentifier(ObjectTypeContent, testContentHash, map[string]string{key: value}); err == nil {
+			t.Errorf("NewIdentifier accepted standalone %s", key)
+		}
 	}
 }
 
@@ -350,12 +365,11 @@ func TestParseRejectsInvalidQualifiers(t *testing.T) {
 		testContentCore + ";lines=20-10",
 		testContentCore + ";bytes=20-10",
 		testContentCore + ";lines=1-2;bytes=0-1",
-		testContentCore + ";visit=swh:1:rev:" + testContentHash,
+		testContentCore + ";origin=" + testOriginURL + ";visit=swh:1:rev:" + testContentHash,
 		testContentCore + ";anchor=" + testContentCore + ";path=/file",
 		testContentCore + ";path=relative",
 		testContentCore + ";path=/contains space",
 		testContentCore + ";unknown=line%0Abreak",
-		"swh:1:rev:" + testContentHash + ";path=/file",
 	}
 
 	for _, input := range tests {

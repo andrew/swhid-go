@@ -187,6 +187,20 @@ func Parse(swhidString string) (*Identifier, error) {
 		qualifiers[key] = value
 	}
 
+	if _, ok := qualifiers[qualifierOrigin]; !ok {
+		delete(qualifiers, qualifierVisit)
+	}
+	if objectType != ObjectTypeContent && objectType != ObjectTypeDirectory {
+		delete(qualifiers, qualifierPath)
+	}
+	if _, ok := qualifiers[qualifierPath]; !ok {
+		delete(qualifiers, qualifierAnchor)
+	}
+	if objectType != ObjectTypeContent {
+		delete(qualifiers, qualifierLines)
+		delete(qualifiers, qualifierBytes)
+	}
+
 	return newIdentifier(objectType, objectHash, qualifiers, false)
 }
 
@@ -345,6 +359,14 @@ func validateQualifiers(objectType ObjectType, qualifiers map[string]string, cop
 	_, hasLines := validated[qualifierLines]
 	_, hasBytes := validated[qualifierBytes]
 	_, hasPath := validated[qualifierPath]
+	if _, hasVisit := validated[qualifierVisit]; hasVisit {
+		if _, hasOrigin := validated[qualifierOrigin]; !hasOrigin {
+			return nil, fmt.Errorf("%w: visit requires origin", ErrInvalidQualifier)
+		}
+	}
+	if _, hasAnchor := validated[qualifierAnchor]; hasAnchor && !hasPath {
+		return nil, fmt.Errorf("%w: anchor requires path", ErrInvalidQualifier)
+	}
 	if hasLines && hasBytes {
 		return nil, fmt.Errorf("%w: lines and bytes cannot be combined", ErrInvalidQualifier)
 	}
