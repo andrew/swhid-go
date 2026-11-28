@@ -190,6 +190,9 @@ func Parse(swhidString string) (*Identifier, error) {
 	if _, ok := qualifiers[qualifierOrigin]; !ok {
 		delete(qualifiers, qualifierVisit)
 	}
+	if objectType != ObjectTypeContent && objectType != ObjectTypeDirectory {
+		delete(qualifiers, qualifierPath)
+	}
 	if _, ok := qualifiers[qualifierPath]; !ok {
 		delete(qualifiers, qualifierAnchor)
 	}

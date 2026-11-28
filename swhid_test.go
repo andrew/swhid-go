@@ -309,6 +309,8 @@ func TestParseIgnoresInapplicableQualifiers(t *testing.T) {
 		{testContentCore, ";visit=" + testSnapshotCore},
 		{testDirectoryCore, ";anchor=" + testRevisionCore},
 		{testDirectoryCore, ";lines=1;bytes=0"},
+		{testRevisionCore, ";path=/file"},
+		{testRevisionCore, ";anchor=" + testRevisionCore + ";path=/file"},
 	}
 	for _, test := range tests {
 		id, err := Parse(test.core + test.suffix)
@@ -368,7 +370,6 @@ func TestParseRejectsInvalidQualifiers(t *testing.T) {
 		testContentCore + ";path=relative",
 		testContentCore + ";path=/contains space",
 		testContentCore + ";unknown=line%0Abreak",
-		"swh:1:rev:" + testContentHash + ";path=/file",
 	}
 
 	for _, input := range tests {
